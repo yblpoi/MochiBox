@@ -1,0 +1,458 @@
+# 终版快照 V0.6 —— 修改器面板 + 全文翻译（team-lead 22:55 构建）
+#
+# **当前二进制锚点见文末「selftest 浏览器用例 opt-in 后重基线」一节（2d03d5ee…）；本节的 46bbba8f… 与下列数字只对 V0.6 构建成立。**
+#
+# 【本轮改了什么】
+#   T01 Agent：`rpc` 通道（{id,method,args} → rpcResult）、42 个 `cheat.*`、`text.scanStart/Chunk/Done/Cancel`
+#   T02 核心：CheatModels/AgentRPC/CheatController/FullTextController/FullTextStore；SessionController 接线
+#   T03 夹具：mv_stub 增加 $game*/$data* 假引擎、rpc_probe(66)/scan_probe(22)/agent_rpc_smoke(57)
+#   T04 UI：三段切换 + 作弊面板（状态/数值/物品/角色/世界/流程/高级）+ 全文页（扫描/翻译/导入导出）
+#   生命周期：关窗即 stop（pipeline cancel → adapter.stop → server stop）；启动/退出清扫遗留浏览器
+#
+# 【构建环境】
+#   `Scripts/build.sh` 现在会自动选一个能展开 `@State` 的 SDK（本机选中 MacOSX26.sdk）。
+#   原因：CLT 的 MacOSX27.0.sdk 把 `@State` 改成 external macro，却不带 `libSwiftUIMacros.dylib`。
+#   覆盖：`MT_SDKROOT=/path/to.sdk bash Scripts/build.sh`。
+#
+# 最终构建（22:52:06，含 AppMain 默认尺寸 920×580）
+46bbba8f6863b336a8adcb085f5c38dbad7754383607c827025bc6c4dd38aa1d  build/MToolMac.app/Contents/MacOS/MToolMac
+d6678fe224b666a8c307ba0d687162cbb5f1d8ce60f8ef10f35a6dcf71e712f1  Resources/agent_mvmz.js
+d6678fe224b666a8c307ba0d687162cbb5f1d8ce60f8ef10f35a6dcf71e712f1  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+#
+# 二进制 size 4.7M（含 CheatPanel/FullTextPanel 符号；不是 UI 替身的 2.9M 假产物）
+#
+# ---- 实测（同一枚 sha，未重建）----
+# selftest          : pass 45 fail 0（`not ok` 0 条，exit 0）
+# agent_rpc_smoke   : 57/57 PASS（node:vm + 同一份 mv_stub，0.1s）
+# rpc_probe         : 66/66 PASS（Chrome for Testing 156 headless + file://）
+# scan_probe        : 22/22 PASS（total=2492，13 片，cancel cancelled=true）
+# run_stub_probes.sh: all green；端口释放；无残留 Chrome（pgrep 空）
+# GUI 启动/退出     : open → pgrep 有进程 → AppleScript quit → pgrep 空；
+#                     browser-profiles 无 .mtool-browser.pid；无 Chrome 进程
+#
+# ---- 未验证（别当已验）----
+# 1. GUI 面板的真人交互：三段切换、快照 1s 刷新、Toggle、危险操作确认（当前只验证了启动/退出与编译）
+# 2. 真游戏上的 cheat 写入（RJxxxxxx 只验证过采集/翻译；作弊会改运行时状态，需单独开档验收）
+# 3. 全文翻译接真后端（mock 后端链路已过；真实 RTT/配额/费用未测）
+# 4. `--close-after` 的用户关窗路径本轮未重跑（V0.5 的 D4 结论仍绑定旧 sha）
+
+# ---- 重构后重基线（dev @ 5994152，2026-10-23）----
+# 背景：85514b7..5994152 为重构分支（19 个提交，Sources/ 大范围搬动）。2026-10-23 以
+#   git switch dev && git merge --ff-only refactor/first-pass
+# 把 5994152 fast-forward 到 dev（无 merge commit、无 rebase），本节锚点即**合并后 dev HEAD** 的产物。
+# 注：dev 在这之后又多了本文件的校准提交（只改文档、不动 Sources/），所以 `git rev-parse dev`
+#   会指向新提交；锚点对应的**源码**是 5994152，二进制由它构建。
+#
+# 源码已变，上面 V0.6 那一节绑定的 46bbba8f… 不再对应当前二进制；以下是 dev@5994152 的锚点。
+# **该锚点已被文末「握手回灌修复后重基线」前移**（2026-10-23，af2915d）：AgentInjector.swift
+# 与 agent_mvmz.js 都改了，两枚 sha 同时变。本节数字只对 3aeb5fe8… 成立。
+# 上面的 V0.6 记录**原样保留**（它仍有历史价值，但引用它的 45/0、66/66 等数字只对 46bbba8f… 成立）。
+# 同理，V0.6 节开头那句「见文末重构后重基线一节（db2bdcdb…）」是当时的引用，现以本节为准。
+#
+# 本节此前的锚点是 885af37 的 db2bdcdb…；之后 12d7b6e、5994152 两轮 UI 外观
+# （材质层数收敛 / 深色模式压暗补偿）改动了 Sources/UI/，二进制因此改变，故在 5994152 重取。
+#   git diff --stat 885af37..5994152 → 只动 Sources/UI/ 下 5 个文件 + 本文件，无其他源码变化。
+#
+# 构建：bash Scripts/build.sh → exit 0；error 0；warning 9 条
+#   9 条站点（去重后）：EngineAdapter.swift 643/645/649、WebPortAssignments.swift 109、
+#   BrowserResolver.swift 296、StaticWebRequest.swift 198、StaticWebServer.swift 436:55/436:71/457。
+#   全部在非 UI 文件上，与 885af37 那轮逐条同站点、零新增。
+#   注：`grep -c 'warning:' build/compile.log` 得 18 行，是因为 Swift 每条 warning 会再打一行
+#   子行（以 "| \- warning:" 开头）；按「文件:行:列」去重后是 9 条。
+# 构建可重现：连续两次构建（同一 sdk、同一源码）产出同一枚 sha，两次 mtime 不同。
+3aeb5fe8b89bd4e27127f70cd473661a5ead798cb9dc50b5df8f98008daae8be  build/MToolMac.app/Contents/MacOS/MToolMac
+33a19d5c9d1a3906b0b0be03e0c178a21c8e7e507ef70388baa677fbb6cda793  Resources/agent_mvmz.js
+33a19d5c9d1a3906b0b0be03e0c178a21c8e7e507ef70388baa677fbb6cda793  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+# 二进制 size 5079008 B，mtime 2026-10-23 13:06 +0800
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空
+#   口径同上：只证"源码不晚于二进制"，不是"二进制由这份源码构建"的充分证明。
+#
+# ---- 实测（同一枚 sha 3aeb5fe8…，未重建）----
+# selftest     : pass 45 fail 0（not ok 0 条，exit 0）
+# store_probe  : pass=25 fail=0
+# skip_parity  : pass=9 fail=0
+# play_e2e     : 本轮两次运行，跑前/跑后二进制 sha 均为 3aeb5fe8…（未重建）。
+#   第 1 次（13:07 起，5m27s）：**pass 8 fail 3，exit 1**
+#       AC-2 红 —— 退出码 1、captured=0、jsonl 0 行；同一轮的 AC-3（translated=3、replaced=3）
+#       与 AC-4（39393/39393）全绿。
+#       失败那次的 ac2.log 特征：probe emitted=3 但 replaced=0、mapSize=0（页面 hook 已装、
+#       文本已触发，事件却没到原生侧，passthrough 的替换也没发生），且缺少
+#       `play: scene=Scene_Boot` 一行 —— 原生侧对页面的观察比成功那次建立得晚。
+#       指向"页面↔原生文本通道偶发未建立"，但**未定位根因**；本作历史 3 次运行（含 db2bdcdb…）
+#       为 绿/红/绿，故按偶发记录，不作稳定性结论。
+#   第 2 次（13:14 起，5m26s）：pass 11 fail 0 + PLAY_E2E_PASS，exit 0
+#       AC-2 退出码 0、captured=3（jsonl 3 行，http=39393 debug=39233，结束后端口已释放）
+#       AC-3 退出码 0、translated=6（jsonl 6 条 translated，6 条带 ◇ 前缀）、probe.replaced=3
+#            （标题画面 3 个按键被画了两轮，ts≈777 与 ts≈1585，故 translated=6 而非 3；
+#             上一轮实测为 3 —— 是本作重绘次数差异，不是回归）
+#       AC-4 两次运行端口一致（ac4a=39393、ac4b=39393）
+#   e2e 布线说明（**不是产品缺陷**）：本机无 RJxxxxxx，改用
+#   reference/test-games/<示例作品>。该作 index.html 在 www/ 下；
+#   885af37 起 play_e2e.sh 自行把传入目录归一成作品根（读 www/js/rpg_core.js 签名），
+#   本轮直接 MT_E2E_GAME=<作品根> bash Tests/e2e/play_e2e.sh 跑通，**未使用 shim 目录或软链**。
+#   captured=3 与本作标题画面可采集文本量有关（多次运行同为 3），不是回归。
+#
+# ---- 未验证（别当已验）----
+# 1. AC-2 那次红（captured=0）是偶发还是稳定复现：本轮只跑两次，未定位根因
+# 2. RJxxxxxx（本机缺失）：135s OP 之后的采集量、AC-2 真实数值未复测
+# 3. 真桌面 GUI 路径与 AC-8 取证（本轮只跑 headless --play）
+# 4. 换 SDK / 换工具链后是否仍同 sha（本次只证了同机同 sdk 的两次连续构建）
+# 5. 重构的行为等价性由审计任务判定，本文件只记验证门禁的实测值
+
+# ---- 握手回灌修复后重基线（dev @ af2915d，2026-10-23）----
+# 背景：`--play` 的握手循环只消费 hello，把窗口内的文本信封读走即焚（自 f2fb0e5 起存在），
+#   真游戏上偶发 `captured=0`。af2915d 增加页面 `requeue` + 宿主回灌；e7a4ed5 给 `--play`
+#   接上 SessionLog（日志只落 `<data>/logs/`，stdout/stderr 一字未变）。
+#   Sources/Adapters/AgentInjector.swift 与 Resources/agent_mvmz.js 都变了，两枚 sha 同时前移；
+#   上一节绑定的 3aeb5fe8… / 5079008 B 只对 dev@5994152 成立。
+#
+# 上一节「未验证 1」问的是 `captured=0` 偶发还是可稳定复现 —— 本轮定位到根因并修复：
+#   修复前 10 轮（空载）未复现，频率低于 1/10；修复后 10 轮里有 3 轮命中同一窗口，
+#   这 3 轮若在修复前必然少 3 条（证据见 Tests/qa/flake-requeue-20261023.md）。
+#
+# 构建：bash Scripts/build.sh → exit 0；error 0；warning 9 条
+#   9 条站点与上一节逐条相同（EngineAdapter 643/645/649、WebPortAssignments 109、
+#   BrowserResolver 296、StaticWebRequest 198、StaticWebServer 436:55/436:71/457），零新增。
+0538c30423e5993fbf67e340e8a55315eb8d938cdf969fde81b622cabc7ce37e  build/MToolMac.app/Contents/MacOS/MToolMac
+a69ea8a2cfa557079fe9deabce4ff1c06d1078a741dd703eeeeab3dc0958e37a  Resources/agent_mvmz.js
+a69ea8a2cfa557079fe9deabce4ff1c06d1078a741dd703eeeeab3dc0958e37a  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5103600 B，mtime 2026-10-23 14:09 +0800（文件内容 = 13:49 那枚，sha 相同）
+# 重建复验：本节收尾时再跑一次 `bash Scripts/build.sh`（exit 0 / error 0 / warning 9），
+#   产出 sha 仍是 0538c304…，只有 mtime 前移 —— 与上一节"同 sdk 同源码两次构建同 sha"一致。
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（本轮实跑，输出为空）
+#   口径同上：只证"源码不晚于二进制"，不是"二进制由这份源码构建"的充分证明。
+#
+# ---- 实测（同一枚 sha 0538c304…，未重建）----
+# selftest     : pass 45 fail 0（not ok 0 条，exit 0）
+# store_probe  : pass=25 fail=0
+# skip_parity  : pass=9 fail=0
+# 10 轮基线    : 修复前构建（e7a4ed5），串行 10 轮，10/10 captured=3，0 轮 captured=0
+# 10 轮修复后  : 10/10 captured>0。第 1/6/10 轮回灌 3 条 text（`已回灌 outbox accepted=3
+#                count=3 types=text=3`）→ captured=6；其余 7 轮无回灌 → captured=3。
+#                这 3 轮在修复前必然只到 3（那 3 条已被握手 drain 吃掉）。
+# 确定性 A/B   : 同一枚二进制、只换页面脚本（MT_AGENT_SCRIPT，不改产品文件）——
+#                带 requeue：回灌 4 条（types=text=4）→ captured=7，jsonl 含探针行；
+#                去掉 requeue：warn 未能回灌 4 条 → captured=3，jsonl 无探针行。
+# play_e2e     : 一次运行，跑前/跑后二进制 sha 均为 0538c304…（未重建）。
+#    pass 11 fail 0 + PLAY_E2E_PASS，exit 0，5m26s
+#       AC-2 exit 0、captured=3（jsonl 3 行，http=39393 debug=39220，结束后端口已释放）
+#       AC-3 exit 0、translated=3（3 条 translated、3 条带 ◇）、probe.replaced=3
+#            （上一轮实测为 6：标题画面重绘两轮；本轮回绘一轮，属本作自身差异，不是回归）
+#       AC-4 两次运行端口一致（ac4a=39393、ac4b=39393）
+#    e2e 这 4 次 `--play` 都没有触发回灌（窗口内无文本），属正常路径。
+#
+# ---- 未验证（别当已验）----
+# 1. 回灌的容量溢出分支（outbox 已 ≥ MAX_OUTBOX）没有实测：握手期积压到 2000 条不现实
+# 2.「evaluate 超时但实际已执行」的重放去重没有实测：宿主在回灌失败时不重试，触发不出来
+# 3. RJxxxxxx（本机缺失）：135s OP 之后的采集量、AC-2 真实数值未复测
+# 4. 真桌面 GUI 路径与 AC-8 取证（本轮只跑 headless `--play`）
+# 5. 换 SDK / 换工具链后是否仍同 sha（本次只证了同机同 sdk 的连续构建）
+
+# ---- 日志轮转与 hello 告警后重基线（dev @ 46ce841，2026-10-23）----
+# 背景：aeec54d 给会话日志接上轮转（保留最近 50 份，Constants.swift / Stores.swift）；
+#   6ddcaa4 把 `hello` 解码失败改成按 attempt 告警，并把成功路径漏掉的告警补上
+#   （AgentInjector.swift）；46ce841 只改文档（Scripts/VERIFY.md、docs/architecture.md），
+#   不进二进制。上一节绑定的 0538c304… / 5103600 B 只对 dev@af2915d 成立。
+#
+# 构建：bash Scripts/build.sh → exit 0；error 0；warning 9 条
+#   9 条站点与上一节逐条相同（EngineAdapter 643/645/649、WebPortAssignments 109、
+#   BrowserResolver 296、StaticWebRequest 198、StaticWebServer 436:55/436:71/457），零新增。
+6efea788dd4529bbd9f56520a3cb4b2abce6daa3b5ca7481633882bee1346433  build/MToolMac.app/Contents/MacOS/MToolMac
+a69ea8a2cfa557079fe9deabce4ff1c06d1078a741dd703eeeeab3dc0958e37a  Resources/agent_mvmz.js
+a69ea8a2cfa557079fe9deabce4ff1c06d1078a741dd703eeeeab3dc0958e37a  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5106032 B，mtime 2026-10-23 15:09 +0800
+# 重建复验：本节收尾前再跑一次 `bash Scripts/build.sh`（exit 0 / error 0 / warning 9），
+#   产出 sha 仍是 6efea788…，只有 mtime 前移（15:08:39 → 15:09:54）——
+#   与上一节"同 sdk 同源码两次构建同 sha"一致。
+# JS 未改：Resources/agent_mvmz.js 与上一节同 sha（a69ea8a2…），只有 Swift 侧变了。
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（本轮实跑，输出为空）
+#   口径同上：只证"源码不晚于二进制"，不是"二进制由这份源码构建"的充分证明。
+#
+# ---- 实测（同一枚 sha 6efea788…，未重建）----
+# selftest     : pass 45 fail 0（not ok 0 条，exit 0）
+# store_probe  : pass=25 fail=0
+# skip_parity  : pass=9 fail=0
+# play_e2e     : 一次运行，跑前/跑后二进制 sha 均为 6efea788…（未重建）。
+#    pass 11 fail 0 + PLAY_E2E_PASS，exit 0，5m27s（15:10:14 → 15:15:41）
+#       AC-2 exit 0、captured=3（jsonl 3 行，全 passthrough；http=39393 debug=39284，
+#            结束后静态端口 39393 已释放）
+#       AC-3 exit 0、translated=3（jsonl 3 条 status=translated、3 条带 ◇）、probe.replaced=3
+#       AC-4 两次运行端口一致（ac4a=39393、ac4b=39393）
+#    AC-4 那两次 8s 运行也各落了 3 行 passthrough（标题画面在窗口内已绘字），不影响端口断言。
+#
+# ---- 未验证（别当已验）----
+# 1. 回灌的容量溢出分支（outbox 已 ≥ MAX_OUTBOX）没有实测（同上一节）
+# 2.「evaluate 超时但实际已执行」的重放去重没有实测（同上一节）
+# 3. RJxxxxxx（本机缺失）：135s OP 之后的采集量、AC-2 真实数值未复测
+# 4. 真桌面 GUI 路径与 AC-8 取证（本轮只跑 headless `--play`）
+# 5. 换 SDK / 换工具链后是否仍同 sha
+# 6. 本次新增的 hello 告警分支没有被触发：4 次 `--play` 的 hello 都解码成功
+# 7. 日志轮转的 50 份上限没有做压力实测：本轮 4 次运行远未到阈值
+
+# ---- E2E 体系重建后重基线（dev @ f794bf3，2026-10-23）----
+# 背景：46902a3..f794bf3 把 E2E 收成五层统一入口（contract 13 / domain 9 / kernel 11 /
+#   faults 10 / game 2，`bash Tests/e2e/run.sh --suite all`），并删除 Chrome for Testing /
+#   Playwright / CDP 相关探针与依赖。**本轮 Sources/ 与 Resources/ 零改动**。
+#
+# 本节登记的就是 docs/qa-report.md §0 里那枚标注「待校准、尚未登记」的 6cf02c87…：
+#   2026-10-23 17:58 用 bash Scripts/build.sh 重建一次，sha 与 16:23 那次**逐字节相同**
+#   （同 SDK 同源码两次构建同 sha），只有 mtime 前移（16:23:18 → 17:58:39）。
+6cf02c8702153ac710321846219261c20b7ab95dcdeec6d9539c0ee39b1e8d18  build/MToolMac.app/Contents/MacOS/MToolMac
+a69ea8a2cfa557079fe9deabce4ff1c06d1078a741dd703eeeeab3dc0958e37a  Resources/agent_mvmz.js
+a69ea8a2cfa557079fe9deabce4ff1c06d1078a741dd703eeeeab3dc0958e37a  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5158400 B，mtime 2026-10-23 17:58:39 +0800
+# JS       size 98384 B，mtime 2026-10-23 17:00:45 +0800（与本文件前一节既有 a69ea8a2… 相同）
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（本轮实跑，输出 0 行）
+#   口径同上：只证「源码不晚于二进制」，不是「二进制由这份源码构建」的充分证明。
+#
+# ---- 实测（同一枚 sha 6cf02c87…，未重建）----
+# selftest    : pass 45 fail 0（`not ok` 0 条，exit 0）
+# E2E all     : E2E PASS suite=all cases=43 assertions=896，连跑 2 次末行一致
+#               113.58s / 110.69s（game 层 SKIP：未设 MT_E2E_GAME）
+#               分层：contract 13/506、domain 9/205、kernel 11/130、faults 10/55
+# E2E faults  : E2E PASS suite=faults cases=10 assertions=55，连跑 3 次全绿
+#               46.06s / 45.22s / 44.95s（F10 端口泄漏修复后，每轮收尾复查端口可重新监听）
+# E2E contract: E2E PASS suite=contract cases=13 assertions=506，连跑 2 次
+#               10.08s / 9.66s；两次 TAP 的 506 条 ok 行逐条 diff 为空
+# 零浏览器    : Tests/ 内 pgrep(Chrome|Chromium) 判定为空；无 npm 依赖（只用内置模块 + swiftc）
+#
+# ---- 未验证（别当已验）----
+# 1. game 层：未设 MT_E2E_GAME，真游戏 2 个 case 本轮未执行（cases=0）
+# 2. GUI 真人交互：首启合规弹窗、添加目录、设置表单、字号滑杆、修改器/全文面板（仍全「未验证」）
+# 3. 真游戏作弊写入、全文翻译接真后端（RTT/配额/费用）未验
+# 4. 缓存淘汰策略实际是 FIFO 而非日志写的 LRU（backlog D21）；跨进程持久缓存未实现（GAP-P0-10）
+# 5. 断网降级（P0-17）的 unsaved 直通态与恢复后自愈无断言（矩阵标「弱」）
+# 6. E2E 端口泄漏 flake 只在本机连跑 5 轮（faults×3 + all×2）未复现；根因修复是结构性的
+#    （close 前 destroy 已接受连接 + 收尾复查端口可 bind），但没在「人为制造残留」下做反例验证
+
+# ---- E2E 断言修复轮（dev @ 8e66e76，2026-10-23，未重建二进制）----
+# 背景：H1 文档补 domain 层；H2 内核层补"消息窗真的画了什么"（K12）；S1 断言名去实测值；
+#   S2 零浏览器判据改为被测进程子孙子树；S3 D9 关窗判据回到语义契约。
+#   **Sources/ 与 Resources/ 零改动**，二进制仍是上面那枚 6cf02c87…（未重建）。
+#   K12 的反例（把夹具基类 startMessage 的 `this._texts = texts.slice()` 改成 `[]`）证明
+#   旧判据确实漏掉了"消息窗不绘制"：K3/K4/K5 全绿，只有 K12 红。
+# E2E all     : E2E PASS suite=all cases=44 assertions=912，连跑 2 次末行一致
+#               两次 `grep -E '^(ok|not ok)'` 的 912 行 diff 为空（修复前有 8 行不同）
+#               分层：contract 13/506、domain 9/205、kernel 12/146、faults 10/55、game SKIP
+# E2E kernel  : E2E PASS suite=kernel cases=12 assertions=146（新增 K12 15 条；K10 7 条）
+#               有 `exec -a "Google Chrome" sleep 90` 诱饵常驻时仍 146/146（旧 pgrep 判据会误报）
+# E2E D9      : node Tests/e2e/cases/domain/09_game_dir_untouched.mjs 连跑 6 次，每次 13 ok / 0 not ok
+# K12 反例    : 单跑 K12 → 5 条 not ok（render=0、绘制次数 0、drawLog=[]、阴性对照也画不出）；
+#               恢复后 15/15。K10 的反例是伪"产品进程" spawn(argv0="Chromium") → 子树检出 1 条
+# 零浏览器    : `chromeProcesses(rootPid)` 只认被测进程的子孙；宿主机诱饵 pgrep 看得到、新判据忽略
+
+# ---- 六项缺陷修复后重基线（dev @ c71e68e，2026-10-23）----
+# 背景：E2E 复核发现 D17–D22 六条产品缺陷，每条一个独立 commit（6048d7f / 13041c7 /
+#   e091c6e / 1abfdd8 / eadaf0f / c71e68e），每个 commit 后都重建并跑 --suite all + --selftest。
+#   改动：Resources/agent_mvmz.js、ErrorModels.swift、Stores.swift、FullTextStore.swift；
+#   Scripts/build.sh 未改。
+0dffcd916cb22a39ac0723288854a0c8c68bffb49d2ad8ec7e279547c7ce6253  build/MToolMac.app/Contents/MacOS/MToolMac
+6f5936c9066164e05ec5b3d576f416a7935c8e3d929faef3f768566aaf519b84  Resources/agent_mvmz.js
+6f5936c9066164e05ec5b3d576f416a7935c8e3d929faef3f768566aaf519b84  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5158496 B，mtime 2026-10-23 22:33:31 +0800
+# JS       size 99246 B
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（0 行）
+#   口径同上：只证「源码不晚于二进制」，不是「二进制由这份源码构建」的充分证明。
+#
+# ---- 实测 ----
+# selftest    : pass 45 fail 0（每个修复 commit 后各一次，均 exit 0）
+# E2E all     : E2E PASS suite=all cases=46 assertions=937（设 MT_E2E_GAME，game 层真跑）
+#               分层：contract 13/507、domain 9/218、kernel 12/146、faults 10/55、game 2/11
+# E2E all     : E2E PASS suite=all cases=44 assertions=926（不设 MT_E2E_GAME，game 层 SKIP）
+# 红→绿证据   : 六条新断言在旧实现上先红：E-14b/E-14c、T-014-I/T-015-I/T-016-I、
+#               D3 短 key 3 条、D1 同秒两次损坏 2 条、D7 LRU 2 条、D8 目录已存在 1 条；
+#               原文摘录与修法见对应 commit 正文。
+#
+# ---- 未验证（别当已验）----
+# 1. GUI 真人交互（首启弹窗、添加目录、设置表单、滑杆、修改器/全文面板）仍全「未验证」
+# 2. D18 的"id 缺失走缺省 #1"只做了手工三态核对，未固化成断言（契约未要求）
+# 3. 同秒备份顺延序号只在探针的两次连续损坏下验证过，未做 3 次以上的并发压力
+# 4. 其它既有缺口不变：跨进程持久缓存（GAP-P0-10）、日志按份数保留（GAP-P0-19）、
+#    断网降级（P0-17）等
+
+
+# ---- 同族/次生缺陷修复后重基线（dev @ 7cccf20，2026-10-23）----
+# 背景：D17–D22 复核发现 3 个同族缺陷（D18 的 equips[].itemId、D20 的 fulltext 同秒隔离、
+#   D17 的全畸形 requeue 批次）、1 个次生缺陷（D21 的 load() 合并 lastUsed）、1 个测试盲区
+#   （夹具 actor() 对未知 id 造角色）与 3 处文档残留。每条一个独立 commit：
+#   903d26b（R1）→ e1bdaaf（R2）→ 8a2dcfb（R3）→ 47e22ed（R4）→ 7cccf20（R5），其后仅文档提交。
+#   改动：Sources/Infra/Stores.swift、Sources/Infra/FullTextStore.swift、Resources/agent_mvmz.js、
+#   Fixtures/mv_stub/index.html、Tests/e2e/**；Scripts/build.sh 未改。
+a4d4b6f535230ded6bb262998c1f098304985bcded3a814a0e7bc1b615d3f7d6  build/MToolMac.app/Contents/MacOS/MToolMac
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  Resources/agent_mvmz.js
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5158608 B，mtime 2026-10-23 23:32:32 +0800
+# JS       size 102368 B
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（0 行）
+#   口径同上：只证「源码不晚于二进制」，不是「二进制由这份源码构建」的充分证明。
+#
+# ---- 实测 ----
+# selftest    : pass 45 fail 0（每个修复 commit 后各一次，均 exit 0）
+# E2E all     : E2E PASS suite=all cases=47 assertions=965（设 MT_E2E_GAME，game 层真跑）
+#               分层：contract 14/528、domain 9/225、kernel 12/146、faults 10/55、game 2/11
+# E2E all     : E2E PASS suite=all cases=45 assertions=954（不设 MT_E2E_GAME，game 层 SKIP）
+# 红→绿证据   : R1 D7 重启 LRU 2 条、R2 U-01…U-15、R3 D8 同秒两次 2 条、R4 U-16/U-17、
+#               R5 E-29/E-30；旧实现上的 not ok 原文见对应 commit 正文。
+#
+# ---- 未验证（别当已验）----
+# 1. game 层只在 reference/test-games 的 MZ 作品上跑过；MV 作品本轮未跑
+# 2. 同秒备份顺延序号只验证到第 2 份，未做 3 份以上 / 并发压力
+# 3. states[] 的 stateId 仍用 clampInt（非数字忽略、99999 夹到 9999）；R2 自查时登记，未修
+# 4. 其它既有缺口不变：跨进程持久缓存（GAP-P0-10）、日志按份数保留（GAP-P0-19）、
+#    断网降级（P0-17）等
+
+# ---- 自检假红修复后重基线（dev @ 25fbb45，2026-10-24）----
+# 背景：`25fbb45 fix(selftest): 停止断言改用进程存在性判定，消除假红` 只改
+#   `Sources/SelfTest/LauncherSupport`（假浏览器接收唯一 token、回滚后用 pgrep 判活，
+#   脚本不再 exec 而是 sh 自己留在 argv 里，TERM 时先收掉 sleep）。自检代码会被编进产品
+#   二进制，**必须重建**：上一枚基线（dev @ 7cccf20）的 sha 自此失效。
+#   `Resources/agent_mvmz.js`、`Scripts/build.sh` 未改。
+e5ddadb673104e360b8354a63aa1b3aa7f6dc745870dcfd9bdabda20dba2714d  build/MToolMac.app/Contents/MacOS/MToolMac
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  Resources/agent_mvmz.js
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5160144 B，mtime 2026-10-24 00:20:27 +0800
+# JS       size 102368 B（与上一枚基线同一份，sha 未变；包内与源文件 cmp 逐字节相同）
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（本轮实跑，输出 0 行）
+#   口径同上：只证「源码不晚于二进制」，不是「二进制由这份源码构建」的充分证明。
+#   构建命令：`bash Scripts/build.sh`（脚本内部 `rm -rf` app bundle 后重新装配）。
+#
+# ---- 实测（同一枚 sha e5ddadb6…）----
+# selftest    : `# pass 45 fail 0`，连跑 2 次末行一致、均 exit 0
+#               （修复前 `web_runner_stop_partial` 偶发假红，正是本次重建的原因）
+# E2E all     : E2E PASS suite=all cases=45 assertions=954（不设 MT_E2E_GAME，game 层 SKIP）
+#               分层：contract 14/528、domain 9/225、kernel 12/146、faults 10/55
+# E2E all     : E2E PASS suite=all cases=47 assertions=965（设 MT_E2E_GAME，game 2/11 真跑）
+#               分层与上一枚基线逐项相同：本次只动自检判据，E2E 断言集合无变化
+#
+# ---- 未验证（别当已验）----
+# 1. game 层只在 reference/test-games 的 MZ 作品上跑过；MV 作品本轮未跑
+# 2. GUI 真人交互（首启弹窗、添加目录、设置表单、字号滑杆、修改器/全文面板）仍全「未验证」
+# 3. 同秒备份顺延序号只验证到第 2 份，未做 3 份以上 / 并发压力
+# 4. 自检假红的修复没做「人为压慢子进程调度」的反例复现（判据已不依赖调度窗口，
+#    但没有在新判据上重现旧的空 pid 文件场景来证明它会红）
+# 5. 其它既有缺口不变：跨进程持久缓存（GAP-P0-10）、日志按份数保留（GAP-P0-19）、
+#    断网降级（P0-17）等
+
+
+# ---- selftest 浏览器用例 opt-in 后重基线（dev @ 0bb93e2，2026-10-24）----
+# 背景：`0bb93e2 fix(selftest): 浏览器用例改为 opt-in 并补齐异常收尸`。自检代码编进产品
+#   二进制，**必须重建**；上一枚基线（dev @ 25fbb45）的 sha 自此失效。
+#   改动文件：Sources/SelfTest/SelfTestRunner.swift、Sources/SelfTest/LauncherCaseSupport.swift、
+#   Sources/Adapters/Web/BrowserProcessSweeper.swift。Resources/agent_mvmz.js、Scripts/build.sh 未改。
+#   做了什么：
+#     1) 真浏览器用例默认不跑：browser_launch_and_terminate 与 web_runner_stop_partial 的 (c) 段
+#        要 MT_SELFTEST_BROWSER=1 才执行，否则输出真 TAP `ok N - … # SKIP …`；
+#        web_runner_stop_partial 的 (a)(b) 用假浏览器，默认照跑（不拉真 Chrome）。
+#     2) 异常也必须收尸：browser 用例把 launch 纳入 do/catch，断言失败/超时/取消都在抛错前
+#        terminate（幂等），并断言带该 profile 的 helper 进程也一起消失。
+#     3) BrowserProcessSweeper 新增多根清扫 sweep(pathsList:)，覆盖 selftest 临时根
+#        （/var/folders/…/MToolMac-selftest-<pid>/browser-profiles）。
+#     4) 新增 no_orphan_browser 收尸门禁：跑完所有用例后先 pgrep 本次 tempRoot，非空即记 fail
+#        （报告后再尽力清掉），直接抓住"注入缺陷"那类泄漏。
+2d03d5ee93af9a288d352600f93c9f07f84805c8d5113bf6dd977cca5cc6406a  build/MToolMac.app/Contents/MacOS/MToolMac
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  Resources/agent_mvmz.js
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5179136 B，mtime 2026-10-24 01:41:51 +0800
+# JS       size 102368 B（sha 未变；包内与源文件逐字节相同）
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（实跑，输出 0 行）
+#   口径同上：只证「源码不晚于二进制」，不是「二进制由这份源码构建」的充分证明。
+#   构建命令：`bash Scripts/build.sh`（脚本内部 `rm -rf` app bundle 后重新装配）。
+#
+# ---- 实测（同一枚 sha 2d03d5ee…）----
+# selftest 默认 : `# pass 45 fail 0 skip 1`，连跑 5 次末行一致、均 exit 0；
+#                 skip 的是 browser_launch_and_terminate（未设置 MT_SELFTEST_BROWSER=1）
+# selftest opt-in: `MT_SELFTEST_BROWSER=1 … --selftest` → `# pass 46 fail 0 skip 0`，exit 0
+# canary 默认    : `MT_BROWSER_PATH=/tmp/canary-browser.sh`（脚本先 touch 标记再 exit 1）
+#                 → 标记文件**不存在**（默认没起任何浏览器）
+# canary opt-in  : 同一脚本改为 touch 后 exec 真 Chromium，再设 MT_SELFTEST_BROWSER=1
+#                 → 标记文件**存在**且整轮 46/0（opt-in 路径仍真拉真杀）
+# 红→绿（收尸）  : 旧代码在 launch 返回后注入抛错 → 留下 6 个 Chrome 进程（pgrep 命中，退出后未回收）；
+#                 新代码同一注入 → catch 里 terminate 生效，pgrep 空，no_orphan_browser = ok。
+# 门禁自证      : 新代码故意删掉收尸 → no_orphan_browser `not ok` 并列出 6 个 pid（先记账再清掉）。
+# E2E all       : E2E PASS suite=all cases=45 assertions=954（不设 MT_E2E_GAME，game 层 SKIP）
+#                 分层：contract 14/528、domain 9/225、kernel 12/146、faults 10/55
+#                 E2E 不依赖 F 组，断言集合与上一枚基线逐项相同
+#
+# ---- 未验证（别当已验）----
+# 1. opt-in 的真浏览器路径只在本机 Playwright Chromium（156 headless）上跑过；Chrome/Edge/Brave 未测
+# 2. 收尸门禁的判活轮询上限 1.5s；SIGKILL 后内核回收更慢的极端情况未压测
+# 3. 其余既有缺口不变：见上一节「自检假红修复后重基线」的未验证 1–5 项
+
+
+
+# ---- 参数校验后重基线（dev @ 102e4cb，2026-10-24）----
+# 背景：`102e4cb feat(cli): 未知旗标报错退出并新增 --help`。入口分流只有
+#   `arguments.contains(...)`，未知旗标被静默吃掉：把 E2E 的 `--suite all` 打到产品二进制上
+#   会按"无模式 = GUI"起一个空窗口，不报错、不输出。参数校验代码编进产品二进制，
+#   **必须重建**；上一枚基线（dev @ 0bb93e2）的 sha 自此失效。
+#   改动文件：新增 Sources/App/ArgumentValidation.swift；Sources/App/AppMain.swift。
+#   Resources/agent_mvmz.js、Scripts/build.sh 未改。
+#   做了什么：
+#     1) 分流前校验：未知 `--` 旗标 → `error_code: unknown_argument` + `unknown option: <arg>`
+#        + `see --help`，exit 2；
+#     2) 互斥模式（`--selftest --play x`）→ `error_code: conflicting_arguments`，exit 2；
+#        旗标放错模式（`--attach --filter`、GUI 下的 `--verbose`）同样按 conflicting_arguments；
+#     3) 只检查 `--` 开头的 token：`-psn_0_…`、`-NSDocumentRevisionsDebugMode`、裸参数放行；
+#        模式自身缺取值（`--attach` 无端口 / `--play` 无目录）仍走原解析器，退出码与文案不变；
+#     4) 新增 `--help` / `-h`：按模式分组列出旗标与退出码，exit 0。
+dd4d2db7e127cc892d3597d94acd4613e9f22ef6d51c74ad6dd02ca1f7c317bf  build/MToolMac.app/Contents/MacOS/MToolMac
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  Resources/agent_mvmz.js
+19e4596a8d575dcfac058c50d05f962aef6bcd3491e0b8c593c05f0d197d6929  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+
+# 二进制 size 5180768 B，mtime 2026-10-24 10:36:18 +0800
+# JS       size 102368 B（sha 未变；包内与源文件逐字节相同）
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空（实跑，输出 0 行）
+#   口径同上：只证「源码不晚于二进制」，不是「二进制由这份源码构建」的充分证明。
+#   构建命令：`bash Scripts/build.sh`（脚本内部 `rm -rf` app bundle 后重新装配）。
+# 构建日志：error 0；warning 18 行（按「文件:行:列」去重后 9 条，站点与上一节逐条相同）
+#
+# ---- 实测（同一枚 sha dd4d2db7…）----
+# 红（旧二进制 2d03d5ee…，重建前实测）：
+#   `timeout 5 … --suite all` → exit 124，stdout/stderr 均 0 字节（看起来像挂住）
+#   `timeout 5 … --help`      → exit 124（--help 也会起 GUI）
+#   `… --selftest --play x`   → exit 0，静默按 selftest 跑完（--play x 被吃掉）
+# 绿（新二进制）：
+#   `… --suite all` → exit 2，0.52s，stdout 三行：
+#       error_code: unknown_argument
+#       unknown option: --suite
+#       see --help
+#   `… --help` / `-h` → exit 0，打印按模式分组的用法与退出码
+#   `… --selftest --play x` → exit 2，`error_code: conflicting_arguments` +
+#       `conflicting modes: --selftest --play`
+#   `… --kernel-smoke <dir> --headless` → exit 2（option not allowed in --kernel-smoke mode）
+#   `… --attach 9999 --filter x`       → exit 2（option not allowed in --attach mode）
+#   `… --verbose`（GUI 模式）           → exit 2（option not allowed in GUI mode）
+#   `… --attach`（缺端口）/ `… --play`（缺目录）→ 仍是原解析器行为：exit 2 + stderr 用法
+# 回归（不改变合法调用）：
+#   selftest      : `# pass 45 fail 0 skip 1`，exit 0；连跑两次末行一致
+#   过滤          : `--selftest --filter skip` → `# pass 4 fail 0 skip 0`，exit 0
+#                   （旧二进制同一命令同为 4/0/0）
+#   LaunchServices: `-psn_0_1234 --selftest` → 45/0/1，exit 0；
+#                   `-NSDocumentRevisionsDebugMode YES --selftest` → 45/0/1，exit 0
+#   GUI 无参数    : 4s 后进程仍存活、stdout/stderr 无 `error_code`（未被误杀），随后 SIGTERM 收掉
+#   kernel-smoke  : `--kernel-smoke Fixtures/e2e_game --timeout 8` → `smoke: PASS`
+#                   `autoplay=skipped(no_video)`，exit 0
+#   play 关窗     : `--play Fixtures/e2e_game --close-after 5`（MT_E2E=1，临时 MT_DATA_DIR）
+#                   → 6.6s，`close_after=5s fired=1` / `window_closed=1` / `captured=0`，exit 1。
+#                   **与旧二进制（HEAD 743a412 在临时 worktree 重建）逐项相同**：该夹具不自动绘字，
+#                   captured==0 → exit 1 是既有语义（AttachCLI.swift:569），不是本轮引入；
+#                   E2E D9 用 `--control` push 文本后才 captured=1 → exit 0。
+#   attach 失败   : `--attach 9999` → 25s 后 `attach failed: MToolError(cdp_timeout)`，exit 1，
+#                   与旧二进制同文案、同退出码
+# E2E all       : E2E PASS suite=all cases=45 assertions=954（不设 MT_E2E_GAME，game 层 SKIP），
+#                 exit 0，111.57s；分层 contract 14/528、domain 9/225、kernel 12/146、faults 10/55
+#
+# ---- 未验证（别当已验）----
+# 1. 旧二进制对照跑在 `/tmp/mtool-head-check`（git worktree，HEAD 743a412）：同源码跨路径构建
+#    sha 不同（27406fc7… / 5179136 B，与旧基线同尺寸），故只比行为与尺寸，不比 sha。
+# 2. 只验证了 `--` 开头的未知旗标；单横线未知参数（如 `-xyz`）按设计放行，未做穷举。
+# 3. Finder/open 的真实 LaunchServices 启动只用手工拼的 `-psn_0_1234` 模拟，未真的双击 .app。
+# 4. `--help` 的文案本身没有断言门禁（只人工核对），改文案不会被任何测试拦住。
+

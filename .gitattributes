@@ -1,0 +1,26 @@
+# 默认按文本处理并统一 LF（macOS 单平台项目，避免 CRLF 噪音）
+* text=auto eol=lf
+
+# 源码 / 脚本 / 文档
+*.swift   text diff=swift
+*.js      text
+*.mjs     text
+*.sh      text eol=lf
+*.py      text
+*.md      text
+*.mermaid text
+*.json    text
+*.plist   text
+*.yml     text
+*.yaml    text
+
+# 二进制：禁止行尾转换与文本 diff
+*.png  binary
+*.jpg  binary
+*.pdf  binary
+*.apk  binary
+*.zip  binary
+*.ogg  binary
+*.ogg_ binary
+*.png_ binary
+*.efkefc binary

@@ -1,0 +1,109 @@
+%% MochiBox v0.4 —— 页通道 / 内置内核 / Store 窗口 的关系图
+%% 与 docs/archive/v0.4/architecture-v0.4-embedded-kernel.md §4.1 同源。
+%% 注意：不要覆盖 docs/archive/v0.1/class-diagram.mermaid（v0.1 基线取证件）。
+classDiagram
+    direction LR
+
+    class PageChannel {
+        <<protocol>>
+        +kind: String
+        +evaluate(expression, timeout) JSEvalResult
+        +addStartupScript(source) String
+        +removeStartupScript(identifier) void
+    }
+    class JSEvalResult {
+        +value: JSONValue?
+        +exceptionText: String?
+        +channelKind: String
+    }
+    class CDPSessionChannel {
+        -cdp: CDPClient
+        -session: CDPSession
+        +kind = "cdp"
+    }
+    class WKPageChannel {
+        -webView: WKWebView
+        +kind = "wk"
+        +evaluateOnce(js) Result
+    }
+    class AgentInjector {
+        -channel: PageChannel
+        -sessionToken: String
+        -scriptIdentifier: String?
+        +installEagerly(timeoutSec) Bool
+        +injectAndHandshake() HelloPayload
+        +drain() [AgentEnvelope]
+        +push(command) void
+        +isInstalled() Bool
+        +evaluateString(expr) String?
+    }
+    class EmbeddedKernelSession {
+        <<protocol>>
+        +start(spec) EmbeddedKernelHandle
+        +makeChannel() PageChannel
+        +snapshotPNG() Data?
+        +closeWindow() void
+        +isAlive() Bool
+    }
+    class WKEmbeddedKernel {
+        -window: NSWindow
+        -webView: WKWebView
+        -closeSignal: WindowCloseSignal
+        +start(spec) EmbeddedKernelHandle
+        +webView(didFailProvisionalNavigation) void
+        +windowWillClose(note) void
+    }
+    class KernelRegistry {
+        <<MainActor enum>>
+        +register(factory)
+        +make() EmbeddedKernelSession?
+    }
+    class WindowCloseSignal {
+        <<Sendable box>>
+        +markClosed(reason)
+        +isClosed: Bool
+    }
+    class LaunchTransport {
+        <<enum>>
+        nwjs
+        webBrowser
+        embeddedKernel
+    }
+    class LaunchHandle {
+        +pid: Int32
+        +port: Int
+        +transport: LaunchTransport
+        +web: WebRunDescriptor?
+        +embedded: EmbeddedRunDescriptor?
+        +closed: WindowCloseSignal?
+    }
+    class GameLauncher {
+        <<actor>>
+        +launch(entry, gameRoot, options, log) LaunchHandle
+        +launchEmbedded(...) LaunchHandle
+        +embeddedKernel(sessionKey) EmbeddedKernelSession?
+        +terminate(handle) void
+    }
+    class TextStreamStore {
+        -rows: [TextEvent]
+        -lastRowIndexByIdentity: [String:Int]
+        -occurrencesByIdentity: [String:Int]
+        +ingest(payload, cacheKey, sessionId, gameId, engine) TextEvent
+        +rowIdentity(surface, raw) String
+    }
+
+    PageChannel <|.. CDPSessionChannel
+    PageChannel <|.. WKPageChannel
+    AgentInjector --> PageChannel
+    WKPageChannel --> JSEvalResult
+    CDPSessionChannel --> JSEvalResult
+    WKEmbeddedKernel ..|> EmbeddedKernelSession
+    EmbeddedKernelSession --> PageChannel
+    EmbeddedKernelSession --> WindowCloseSignal
+    KernelRegistry ..> EmbeddedKernelSession
+    GameLauncher --> KernelRegistry
+    GameLauncher --> LaunchHandle
+    GameLauncher --> EmbeddedKernelSession
+    LaunchHandle --> LaunchTransport
+    LaunchHandle --> WindowCloseSignal
+    AgentInjector --> TextStreamStore : envelope → ingest

@@ -1,0 +1,124 @@
+%% V0.2 Web 运行后端 —— 类图（与 docs/archive/v0.2/architecture-v0.2-web-runner.md §3.1 同源）
+classDiagram
+    direction LR
+
+    class WebGameRunner {
+        <<actor>>
+        -config: WebRunnerConfig
+        -server: StaticWebServer
+        -browser: Process
+        -stopped: Bool
+        +start() async throws WebRunHandle
+        +stop() async
+        +snapshot() WebRunnerSnapshot
+    }
+
+    class StaticWebServer {
+        <<actor>>
+        -root: URL
+        -port: Int
+        -listener: NWListener
+        -connections: Set
+        -stopping: Bool
+        +start() async throws Int
+        +stop() async
+        +activeConnections() Int
+    }
+
+    class StaticWebRequest {
+        <<enum>>
+        +parseHead(Data) RequestHead
+        +resolve(String, URL) Resolution
+        +parseRange(String, Int64) RangeOutcome
+        +mimeType(String) String
+        +commonHeaders(Int) String
+    }
+
+    class BrowserResolver {
+        <<enum>>
+        +resolve(String, SessionLog) BrowserCandidate
+        +launchArguments(BrowserLaunchSpec) [String]
+        +searchedPaths(String) [String]
+    }
+
+    class WebPortAssignments {
+        <<actor>>
+        +assign(URL, Int, Int, isFree) Int
+        +persistedPort(URL) Int
+        +release(URL) void
+    }
+
+    class GameLauncher {
+        <<actor>>
+        -running: Dictionary
+        -webRuns: Dictionary
+        -usedPorts: Set
+        -usedWebPorts: Set
+        +resolveStrategy(URL, EngineKind) LaunchStrategy
+        +launch(GameEntry, URL, LaunchOptions, SessionLog) LaunchHandle
+        +terminate(LaunchHandle) async
+        +allocatePort() Int
+        +allocateWebPort(URL) async Int
+    }
+
+    class LaunchHandle {
+        +pid: Int32
+        +port: Int
+        +executableURL: URL
+        +arguments: [String]
+        +gameRoot: URL
+        +logURL: URL
+        +startedAt: Date
+        +transport: LaunchTransport
+        +web: WebRunDescriptor
+    }
+
+    class WebRunDescriptor {
+        +sessionKey: String
+        +httpPort: Int
+        +webRoot: URL
+        +pageURL: String
+        +profileDir: URL
+        +browserBundlePath: String
+    }
+
+    class WebRunHandle {
+        +browserPid: Int32
+        +browserExecutable: URL
+        +arguments: [String]
+        +debugPort: Int
+        +httpPort: Int
+        +pageURL: String
+        +profileDir: URL
+        +webRoot: URL
+    }
+
+    class LaunchStrategy {
+        <<enum>>
+        nwjsApp
+        webBrowser
+    }
+
+    class LaunchTransport {
+        <<enum>>
+        nwjs
+        webBrowser
+    }
+
+    class ByteRange {
+        +start: Int64
+        +end: Int64
+        +length: Int64
+    }
+
+    GameLauncher --> WebGameRunner : creates_and_registers
+    GameLauncher ..> LaunchStrategy : resolves
+    GameLauncher ..> LaunchHandle : produces
+    LaunchHandle *-- WebRunDescriptor
+    LaunchHandle ..> LaunchTransport
+    WebGameRunner --> StaticWebServer : owns
+    WebGameRunner ..> BrowserResolver : resolves_executable
+    WebGameRunner ..> WebRunHandle : produces
+    WebGameRunner ..> WebPortAssignments : asks_port
+    StaticWebServer ..> StaticWebRequest : parses_and_guards
+    StaticWebRequest ..> ByteRange : produces

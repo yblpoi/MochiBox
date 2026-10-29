@@ -1,0 +1,193 @@
+classDiagram
+    %% ============================================================
+    %% v0.3 修复（BUG-11 + profile_locked）—— 只画被这两项触碰/新增的类型
+    %% 与 docs/archive/v0.1/class-diagram.mermaid（v0.1）并行存在，不替换。
+    %% ============================================================
+
+    %% ---------------- Agent 侧（Resources/agent_mvmz.js）----------------
+    %% JS 无 class，用命名空间表示；函数签名按本设计的目标态写。
+
+    class AgentMVMZ {
+        <<namespace>>
+        +Number VERSION = 1
+        +Number ESCAPE_TABLE_VERSION = 2
+        +String SINGLE_CODES
+        +Array~String~ BRACKET_CODES
+        +Object state
+        +Object translations
+        +Object lastEmitAt
+        +splitSegments(raw) Array~Segment~
+        +textSegments(segments) Array~String~
+        +textOf(segments) String
+        +mapKeyOfSegments(segments, raw) String
+        +mapKeyOf(raw) String
+        +mergeBySkeleton(rawSegments, translatedSegments) MergeOutcome
+        +putTranslation(item) void
+        +lookup(raw, key, rawSegments) String?
+        +shouldEmitFor(surface, identity) Boolean
+        +processText(raw, surface) String?
+        +collect(raw, surface, key, replaced) void
+        +probe() String
+        +inbox(json) void
+    }
+
+    class Segment {
+        <<value object>>
+        +String kind
+        +String value
+    }
+
+    class MergeOutcome {
+        <<discriminated union>>
+        +Boolean ok
+        +String value
+        +String reason
+        +Number pieces
+        +Number textCount
+    }
+
+    class TranslationEntry {
+        <<Map value, key = mapKey>>
+        +String translatedRaw
+        +Array~Segment~ segments
+    }
+
+    class AgentState {
+        +Boolean enabled
+        +Number replaced
+        +Number skipped
+        +Number errors
+        +Number mergeFallback
+    }
+
+    AgentMVMZ ..> Segment : produces
+    AgentMVMZ ..> MergeOutcome : returns
+    AgentMVMZ "1" o-- "*" TranslationEntry : translations[mapKey]
+    TranslationEntry "1" o-- "*" Segment : segments（只用 kind==text 的值）
+    AgentMVMZ "1" *-- "1" AgentState : state
+
+    %% ---------------- Host 侧：翻译身份与下发（既有，不改协议）----------------
+
+    class Segmenter {
+        <<enum, Sources/Domain/Segmenter.swift>>
+        +splitSegments(raw, engineFamily) Array~Segment~
+        +textSegments(segments) Array~Segment~
+        +textSegmentCount(segments) Int
+        +joinForBackend(segments) String
+        +mapKey(segments) String
+        +normalizeForKey(text) String
+        +keyMaterial(engineFamily, srcLang, tgtLang, segments) String
+        +cacheKey(engineFamily, srcLang, tgtLang, segments) String
+        +reassemble(segments, translatedText) String
+        +translatedSegments(segments, translatedText) Array~Segment~
+    }
+
+    class TranslationPushItem {
+        <<struct, Models.swift:695>>
+        +String key
+        +String translatedRaw
+        +Array~Segment~ segments
+    }
+
+    class HostCommand {
+        <<enum, Models.swift:708>>
+        +setTranslation(TranslationPushItem)
+        +setTranslations(Array~TranslationPushItem~)
+        +jsonText() String
+        -pushItemToJSON(item) Dictionary
+    }
+
+    class SessionController {
+        <<class, SessionController.swift>>
+        -Dictionary delivered
+        -Dictionary mapKeyByCacheKey
+        +handleText(envelope) void
+        -resolve(payload, cacheKey) void
+        -pushTranslation(cacheKey, raw, segments) void
+    }
+
+    class TextStreamStore {
+        <<class, TextStreamStore.swift>>
+        +rowsSharingCacheKey(cacheKey) Array~Int~
+        +applyTranslation(cacheKey, translatedRaw, segments, backend, latencyMs, cached) void
+    }
+
+    class TextEvent {
+        <<struct, Models.swift:501>>
+        +String raw
+        +Array~Segment~ segments
+        +String key
+        +String translated
+        +Array~Segment~ translatedSegments
+    }
+
+    SessionController ..> Segmenter : 两级键 / 回填
+    SessionController ..> TranslationPushItem : 构造下发项
+    SessionController ..> HostCommand : send(.setTranslation)
+    SessionController ..> TextStreamStore : applyTranslation（按 cacheKey 扇出）
+    TextStreamStore "1" o-- "*" TextEvent : rows
+    HostCommand ..> TranslationPushItem
+    TranslationPushItem "1" o-- "*" Segment
+    HostCommand ..> AgentMVMZ : window.__mochibox.inbox(json)
+    Segmenter ..> Segment : 产出
+
+    %% ---------------- Host 侧：profile 锁（新增）----------------
+
+    class ProfileLockState {
+        <<enum, 新增 · WebGameRunner.swift>>
+        +clear
+        +heldByLiveBrowser(pid, target)
+        +unremovable(path, target, detail)
+        +error() MochiBoxError?
+        +logValue String
+        +message String
+    }
+
+    class WebGameRunner {
+        <<actor, WebGameRunner.swift>>
+        -URL profileDir
+        +start() WebRunHandle
+        +stop() void
+        -shutdown() void
+        -createProfileDirectory() void
+        -reclaimOrphanBrowser() void
+        -clearStaleSingletonLocks(manager) ProfileLockState
+        -isOurBrowser(pid) Boolean
+        -processArguments(pid) Array~String~
+        -launchProcess(browser, arguments) Process
+    }
+
+    class ErrorCode {
+        <<enum, Models.swift:357>>
+        +browserExitedEarly
+        +profileLocked
+        +retryable Boolean
+        +uiMessage String
+    }
+
+    class MochiBoxError {
+        <<struct, Models.swift:445>>
+        +ErrorCode code
+        +String message
+        +Bool retryable
+        +String underlying
+        +asErrorInfo ErrorInfo
+    }
+
+    WebGameRunner ..> ProfileLockState : clearStaleSingletonLocks 返回
+    WebGameRunner ..> MochiBoxError : throw profile_locked
+    ProfileLockState ..> MochiBoxError : error(for:)
+    MochiBoxError --> ErrorCode
+    AttachCLI ..> ErrorCode : environmentCodes 含 profileLocked → exit 3
+    GameLauncher ..> WebGameRunner : start()
+
+    class AttachCLI {
+        <<enum, App/AttachCLI.swift>>
+        +Set environmentCodes
+        +runPlay(options) Int32
+    }
+
+    class GameLauncher {
+        <<actor, Launcher/GameLauncher.swift>>
+        +launch(entry, gameRoot, options, log) LaunchHandle
+    }

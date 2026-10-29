@@ -1,0 +1,91 @@
+%% ============================================================
+%% v0.3 修复调用流（两条独立链路）
+%%   A. BUG-11：同一 mapKey、不同 raw 前缀 → 用本行 raw 骨架重组
+%%   B. profile_locked：锁清不掉 → 在起监听/拉浏览器之前硬失败
+%% 与 docs/archive/v0.1/sequence-diagram.mermaid（v0.1）并行存在，不替换。
+%% ============================================================
+
+sequenceDiagram
+    autonumber
+    participant Engine as 引擎页面
+    participant Agent as AgentMVMZ<br/>(agent_mvmz.js)
+    participant Host as SessionController
+    participant Cache as TranslationCache
+    participant Store as TextStreamStore
+    participant UI as MainWindow
+
+    rect rgb(232, 244, 255)
+    Note over Engine,UI: A. BUG-11 —— 行 A 先到，行 B（带码变体）后到
+    Engine->>Agent: Window_Base.drawTextEx("こんにちは")
+    Agent->>Agent: splitSegments(raw) → [text こんにちは]
+    Agent->>Agent: mapKeyOfSegments(segments, raw) = "こんにちは"
+    Agent->>Agent: lookup(raw, key, segments) → miss
+    Agent->>Agent: collect() → state.mergeFallback 不变
+    Agent-->>Host: emit(text, {raw, segments, key, status})
+    Host->>Host: mapKey = Segmenter.mapKey(payload.segments)
+    Host->>Host: cacheKey = Segmenter.cacheKey(...)  // 只吃 text 段
+    Host->>Host: mapKeyByCacheKey[cacheKey] = mapKey
+    Host->>Store: ingest(payload, cacheKey) → 新增行 A
+    Host->>Cache: get(cacheKey) → miss
+    Host->>Host: 后端翻译 → translatedText = "你好"
+    Host->>Host: translatedSegments(A.segments, "你好") = [text 你好]
+    Host->>Host: reassemble(A.segments, "你好") = "你好"
+    Host->>Host: delivered[cacheKey] = (raw:"你好", segments:[text 你好])
+    Host->>Store: applyTranslation(cacheKey, "你好", [text 你好])
+    Store-->>UI: 行 A 译文列 = 你好
+    Host->>Agent: HostCommand.setTranslation{key:"こんにちは", translatedRaw:"你好", segments:[text 你好]}
+    Agent->>Agent: putTranslation → translations["こんにちは"] = {translatedRaw, segments}
+
+    Engine->>Agent: Window_Base.drawTextEx("\C[2]こんにちは")   ← 同一 mapKey 的另一种画法
+    Agent->>Agent: splitSegments → [code \C[2], text こんにちは]
+    Agent->>Agent: mapKeyOfSegments(...) = "こんにちは"（剥码）
+    Agent->>Agent: lookup(raw, key, segments)
+    Note right of Agent: ★ 修复点：以 raw 的骨架重组<br/>code 段发本行自己的 \C[2]<br/>text 段取 entry.segments 的「你好」<br/>entry 里的 code 段被丢弃
+    Agent->>Agent: mergeBySkeleton → ok, "\C[2]你好"
+    Agent->>Agent: state.replaced++
+    Agent-->>Host: emit(text, {raw:"\C[2]こんにちは", ...})
+    Host->>Host: cacheKey 与行 A 相同（同翻译身份）
+    Host->>Store: delivered[cacheKey] 命中 → applyTranslation（不再下发）
+    Store-->>UI: 行 B 译文列 = 行 A 的 raw（已知显示层同型点，本轮不修）
+    Engine->>Engine: 绘制 "\C[2]你好" → 引擎解析码 → 蓝色文字，角标正确
+    Note over Engine: 反向顺序（先画带码行）同样成立：<br/>plain 行得到「你好」，不会凭空加色
+    end
+
+    rect rgb(240, 255, 240)
+    Note over Agent: A4 降级路径（段数对不上）
+    Agent->>Agent: mergeBySkeleton → {ok:false, reason:'count_mismatch'}
+    Agent->>Agent: state.mergeFallback++ ；返回 null
+    Agent-->>Engine: 不替换 → 屏幕保持原文（宁可回退，不画错码）
+    end
+
+    rect rgb(255, 244, 232)
+    Note over Engine,UI: B. profile_locked —— 锁清不掉
+    UI->>Host: start(session)
+    Host->>Host: MVAdapter.launch → GameLauncher.launch(entry, …)
+    GameLauncher->>Host: WebGameRunner(config).start()
+    Note right of Host: WebGameRunner.start()<br/>① createProfileDirectory()
+    Host->>Host: reclaimOrphanBrowser()   // 按 .mochibox-browser.pid 回收，只杀"确认是本 profile 的浏览器"
+    Host->>Host: lockState = clearStaleSingletonLocks(manager)
+    Note right of Host: SingletonLock = 软链 "<hostname>-<pid>"<br/>· pid 活且 isOurBrowser → heldByLiveBrowser（保留锁）<br/>· 尝试删除后终检仍在 → unremovable<br/>· 否则 → clear
+    alt lockState == .heldByLiveBrowser
+        Host-->>GameLauncher: throw MochiBoxError(.profileLocked, reason=held_by_live_browser)
+    else lockState == .unremovable
+        Host-->>GameLauncher: throw MochiBoxError(.profileLocked, reason=unremovable)
+    else lockState == .clear
+        Note right of Host: ★ 门禁在此之后、起监听之前<br/>（server 仍为 nil → 失败即无残留）
+        Host->>Host: StaticWebServer.start()（分配/绑定静态端口）
+        Host->>Host: BrowserResolver.resolve()
+        Host->>Host: launchProcess() → Chromium
+        Host->>Host: CDPClient.waitForReady(timeout 15s)
+        alt 调试端口就绪
+            Host-->>GameLauncher: WebRunHandle(pid, port, pageURL, profileDir)
+        else 进程已退出
+            Host-->>GameLauncher: throw MochiBoxError(.browserExitedEarly)
+        end
+    end
+    GameLauncher->>Host: catch → runner.stop()（幂等）+ 释放端口/端口表
+    GameLauncher-->>Host: rethrow
+    Host->>UI: fail(MochiBoxError) → lastError = ErrorInfo(code, message)
+    UI-->>UI: sessionHeader 显示 "profile_locked：<四要素文案>"
+    Note over UI: 浏览器根本没被拉起 → 日志里不会出现<br/>"Failed to create a ProcessSingleton … Aborting now"
+    end

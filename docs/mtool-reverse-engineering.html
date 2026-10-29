@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MTool 逆向分析报告</title>
+<style>
+  :root{
+    --ink:#1c1f23; --muted:#5f6672; --faint:#8b929e;
+    --line:#e3e6ea; --line2:#eef0f3; --bg:#ffffff; --wash:#f7f8fa;
+    --accent:#2f5d8a; --accent2:#8a5a2f; --ok:#2f6f4f; --warn:#8a4a2f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.72 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:860px;margin:0 auto;padding:56px 28px 96px}
+  header{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:40px}
+  .kicker{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:14px}
+  h1{font-size:30px;line-height:1.3;font-weight:600;margin:0 0 14px;letter-spacing:-.01em}
+  .lede{font-size:16px;color:var(--muted);margin:0;max-width:70ch}
+  .meta{margin-top:20px;display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px;background:var(--wash)}
+  h2{font-size:19px;font-weight:600;margin:52px 0 16px;padding-top:8px;letter-spacing:-.01em}
+  h2 .n{color:var(--faint);font-weight:400;font-size:14px;margin-right:10px;font-variant-numeric:tabular-nums}
+  h3{font-size:15px;font-weight:600;margin:26px 0 8px}
+  p{margin:0 0 14px}
+  ul{margin:0 0 16px;padding-left:20px}
+  li{margin:6px 0}
+  code{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--wash);
+    border:1px solid var(--line2);border-radius:4px;padding:1px 5px;white-space:nowrap}
+  pre{background:#fbfbfc;border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow-x:auto;margin:14px 0 18px}
+  pre code{background:none;border:0;padding:0;font-size:12.5px;line-height:1.62;white-space:pre}
+  .k{color:#8a2f5d}.s{color:#2f6f4f}.c{color:#8b929e;font-style:italic}
+  table{width:100%;border-collapse:collapse;margin:16px 0 20px;font-size:13.5px}
+  th{text-align:left;font-weight:600;color:var(--muted);border-bottom:1px solid var(--line);padding:8px 10px;font-size:12.5px;letter-spacing:.02em}
+  td{border-bottom:1px solid var(--line2);padding:9px 10px;vertical-align:top}
+  tr:last-child td{border-bottom:1px solid var(--line)}
+  .card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0;background:#fff}
+  .card .h{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+  .card .h b{font-size:14.5px;font-weight:600}
+  .card .h span{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .card p{margin:0;color:var(--muted);font-size:14px}
+  .callout{border-left:3px solid var(--accent);background:#f8fafc;padding:14px 18px;border-radius:0 8px 8px 0;margin:18px 0}
+  .callout.amber{border-left-color:var(--accent2);background:#fdfaf6}
+  .callout p:last-child{margin:0}
+  .diagram{border:1px solid var(--line);border-radius:12px;padding:10px 4px;background:#fff;margin:18px 0}
+  .neg{border-left:3px solid var(--warn);background:#fdf8f6;padding:14px 18px;border-radius:0 8px 8px 0;margin:18px 0}
+  footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--line);font-size:13px;color:var(--faint)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:720px){.two{grid-template-columns:1fr}}
+  .badge{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:4px;border:1px solid var(--line);
+    color:var(--muted);background:var(--wash);font-variant-numeric:tabular-nums}
+  .badge.ok{color:var(--ok);border-color:#cfe3d7;background:#f3f9f5}
+  .badge.no{color:var(--warn);border-color:#eeddd5;background:#fdf7f4}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">Reverse engineering · 证据报告</div>
+  <h1>MTool 是怎么工作的</h1>
+  <p class="lede">对象：Windows 客户端 <code>MTool.zip</code>、Android 主程序 <code>mtool_v55_24.apk</code> 及三个引擎包。
+  方法：纯静态分析（ZIP 结构、PE 导入表与字符串、V8 字节码字符串常量、AXML 字符串池、明文 JSON 资源、运行时插件包）。</p>
+  <div class="meta">
+    <span class="chip">未做动态运行（本机无 Windows / Android 环境）</span>
+    <span class="chip">凡属推断均已标注</span>
+    <span class="chip">2026-10-20</span>
+  </div>
+</header>
+
+<h2><span class="n">01</span>一句话结论</h2>
+<p>MTool 不是一个"翻译器"，而是一个<strong>游戏进程内注入框架 + 文本总线 + 翻译渲染管线</strong>。翻译只是它跑在总线上的一条业务流；同样的通道还能改金币、解锁道具、换字体、注入按键。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 680 466" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>MTool 运行架构</title>
+  <desc>宿主 UI 通过本地 WebSocket 总线连接注入到游戏进程内的 Agent，Agent 在引擎 VM 内求值并拦截绘制文本，译文来自翻译后端。</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="340" y="40" width="300" height="280" rx="20" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="360" y="64" font-size="12" fill="#5F5E5A" font-family="-apple-system,PingFang SC,sans-serif">游戏进程（目标）</text>
+
+  <rect x="360" y="76" width="260" height="56" rx="8" fill="#D3D1C7" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="490" y="96" font-size="14" font-weight="500" fill="#2C2C2A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">注入器</text>
+  <text x="490" y="115" font-size="12" fill="#5F5E5A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">DLL 注入 / CDP 附加</text>
+
+  <rect x="360" y="156" width="260" height="56" rx="8" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="490" y="176" font-size="14" font-weight="500" fill="#0C447C" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">引擎内 Agent</text>
+  <text x="490" y="195" font-size="12" fill="#185FA5" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">eval · 拦截绘制文本</text>
+
+  <rect x="360" y="236" width="260" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="490" y="256" font-size="14" font-weight="500" fill="#2C2C2A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">游戏引擎</text>
+  <text x="490" y="275" font-size="12" fill="#5F5E5A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">Ruby · JS · Python · TJS</text>
+
+  <line x1="490" y1="132" x2="490" y2="156" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="498" y="147" font-size="11.5" fill="#5F5E5A" font-family="-apple-system,PingFang SC,sans-serif">植入</text>
+
+  <line x1="490" y1="212" x2="490" y2="236" stroke="#185FA5" stroke-width="1.5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+  <text x="498" y="227" font-size="11.5" fill="#185FA5" font-family="-apple-system,PingFang SC,sans-serif">eval / hook</text>
+
+  <rect x="40" y="110" width="200" height="110" rx="12" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="140" y="140" font-size="14" font-weight="500" fill="#0C447C" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">宿主 UI</text>
+  <text x="140" y="161" font-size="12" fill="#185FA5" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">游戏库 / 翻译面板</text>
+  <text x="140" y="180" font-size="12" fill="#185FA5" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">文本流 / 字体与字号</text>
+
+  <line x1="240" y1="165" x2="340" y2="165" stroke="#185FA5" stroke-width="1.5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+  <text x="290" y="150" font-size="11.5" fill="#5F5E5A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">本地 WebSocket</text>
+  <text x="290" y="184" font-size="11.5" fill="#5F5E5A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">命令 / 应答</text>
+
+  <rect x="40" y="380" width="200" height="56" rx="12" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="140" y="402" font-size="14" font-weight="500" fill="#2C2C2A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">翻译后端</text>
+  <text x="140" y="421" font-size="12" fill="#5F5E5A" text-anchor="middle" font-family="-apple-system,PingFang SC,sans-serif">TrsNT · 自定义译文</text>
+
+  <line x1="140" y1="220" x2="140" y2="380" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="150" y="304" font-size="11.5" fill="#5F5E5A" font-family="ui-monospace,Menlo,monospace">HTTPS</text>
+</svg>
+</div>
+
+<h2><span class="n">02</span>证据链</h2>
+
+<div class="card">
+  <div class="h"><b>它是 NW.js 应用，不是 Electron</b><span>MTool/Tool/package.json</span></div>
+  <p><code>"main": "www/index.html"</code>、<code>chromium-args: "--disable-web-security --enable-node-worker"</code>，同目录躺着 <code>nw.exe</code>、<code>nw.dll</code>（195&nbsp;MB）、<code>node.dll</code>、<code>v8_context_snapshot.bin</code>。依赖只有四个：<code>ws</code>（本地 WebSocket）、<code>legacy-encoding</code>（Shift-JIS/GBK）、<code>pe-library</code>&nbsp;+&nbsp;<code>resedit</code>（<strong>直接改写 PE 文件</strong>，用于注入器与容器启动）。</p>
+</div>
+
+<div class="card">
+  <div class="h"><b>主逻辑有三层保护</b><span>www/loader.js</span></div>
+  <p>① <code>evalNWBin()</code> 加载 <code>loader.bin.&lt;nw版本&gt;</code>（V8 二进制，与 NW.js 版本强绑定）；② <code>loader.bin.ff</code>（26&nbsp;MB）交原生扩展 <code>new MToolExt().ExecuteBytecodeArrayBuffer()</code> 执行；③ <code>www/data/</code> 下 216 个数字命名模块（11.2&nbsp;MB）全部加密。</p>
+</div>
+
+<div class="card">
+  <div class="h"><b>每个引擎一个注入 DLL</b><span>Tool/loaders/ · 41 个文件</span></div>
+  <p>从 DLL 里能直接读到它要挂到什么上：RGSS 的 <code>rb_eval_string</code>、Ren'Py 的 <code>PyGILState_Ensure</code>、吉里吉里的 <code>NI_Mtool</code> 命名接口、Siglus 的 <code>IATLGraphicsManager</code>、Unity 的 <code>0Harmony.dll</code>。完整对照见下表。</p>
+</div>
+
+<div class="card">
+  <div class="h"><b>通道是本地 WebSocket，Agent 主动连出</b><span>loaders/*.dll + mtool-runtime</span></div>
+  <p>DLL 里有 <code>ws://127.0.0.1:</code>、<code>mtool-native/1.0</code>、<code>mtoolsocket2</code>、<code>okmtool</code>、<code>WaitNamedPipeW</code>（管道回退）。而运行时包里那份明文 JS 把方向写死了：<code>client.webSocketConnect(`ws://${serverAddr}`)</code>——<strong>是 Agent 连宿主，不是宿主连 Agent</strong>。</p>
+</div>
+
+<div class="card">
+  <div class="h"><b>Protection 之外，Android 与 PC 共用同一套前端</b><span>assets/node/mtoolWebRoot/</span></div>
+  <p>APK 里的 <code>loader.js</code>、<code>loader.bin.0.67.2</code>、<code>loader.bin.ff</code>、<code>crcData</code>（63445&nbsp;B 逐字节相同）与 PC 版完全同源。差别只在宿主：PC 用 NW.js，Android 用 <code>libnode.so</code>+<code>libxul.so</code>(Gecko)+<code>libcontent_shell</code>(Chromium)。</p>
+</div>
+
+<div class="card">
+  <div class="h"><b>移动端各引擎是"换引擎实现"，不是模拟器</b><span>三个 APK</span></div>
+  <p>mkxp-z（<code>libmkxp-z.so</code> + <code>libruby187/193/313.so</code> + 全套 RTP）、Ren'Py（<code>runtime-pack.tar.zst</code> 132&nbsp;MB）、EasyRPG（<code>libeasyrpg_android.so</code>）。只有纯 Windows 引擎才落到 Winlator（Proton 9/10/11 + Wine Mono）。</p>
+</div>
+
+<h2><span class="n">03</span>注入矩阵：它到底挂了什么</h2>
+<table>
+<thead><tr><th>引擎</th><th>注入件</th><th>钩子落点（据字符串判定）</th></tr></thead>
+<tbody>
+<tr><td>RPG Maker XP/VX/VXAce</td><td><code>RGSSHook(64).dll</code></td><td>Ruby VM：<code>rb_eval_string</code>、<code>rb_str_new_cstr</code>、<code>RGSSEval</code>、<code>RGSSGetStringUTF8</code></td></tr>
+<tr><td>RPG Maker MV/MZ</td><td><code>mzHook(32).dll</code></td><td>页面 JS 上下文：<code>if(typeof process==='undefined'){MTool_CWD=…</code>、<code>mtoolenv</code></td></tr>
+<tr><td>Ren'Py</td><td><code>PythonHook(64).dll</code></td><td>CPython：<code>PyGILState_Ensure</code>、<code>PyImport_AddModule</code>；内嵌源码含 <code>callMToolTrs</code></td></tr>
+<tr><td>吉里吉里 / KAG</td><td><code>krkrzHook32/64.dll</code>、<code>krkr2Hook.dll</code></td><td>TJS2 命名接口 <code>NI_Mtool</code>、<code>mtool_kag</code>、<code>CloneTagObjectShallow</code></td></tr>
+<tr><td>SiglusEngine</td><td><code>SRPGHook.dll</code></td><td>COM/ATL：<code>IATLGraphicsManager</code>、<code>IATLStoryPreference</code>、<code>MToolSimpleObject</code></td></tr>
+<tr><td>WOLF RPG Editor</td><td><code>wolfHook1/3.dll</code></td><td>插件 DLL + <code>Save_MTool\</code> 存档旁路、<code>Mtool_Dummy</code></td></tr>
+<tr><td>Unity / .NET</td><td><code>MonoJunkiex86/64.dll</code> + <code>0Harmony.dll</code></td><td>Harmony 方法级打补丁</td></tr>
+<tr><td>Godot</td><td><code>GodotHook(_3_0_0/_4_2_0).dll</code></td><td>按引擎版本分档注入</td></tr>
+<tr><td>Pixel Game Maker MV</td><td><code>AgtkHook.dll</code></td><td>需专用字体 <code>mtool_PGMMV_font.ttf</code></td></tr>
+<tr><td>RPG Developer Bakin</td><td><code>BakinLauncher.exe</code></td><td>启动链替换</td></tr>
+</tbody>
+</table>
+
+<h3>四种注入方式（客户端自带文案即功能清单）</h3>
+<ul>
+  <li><strong>主动注入</strong>：<code>loaders\inject.exe</code> 启动游戏并注入。</li>
+  <li><strong>被动注入</strong>：把 <code>winmm.dll</code> / <code>version.dll</code> 写进游戏目录，靠 DLL 搜索顺序在启动时被加载。实体就在 <code>loaders/loaderDLL/{wm32,wm64,ver32,ver64}</code>——它们是<strong>混淆过的</strong>载荷（熵 5.4，尾部 <code>50 44 43 40</code> 周期性重复），运行时才还原成 DLL。</li>
+  <li><strong>容器分离启动</strong> / <strong>注入运行中的游戏</strong>（后者仅支持 MV/MZ/XP-VXAce、TyranoBuilder、Ren'Py）。</li>
+  <li><strong>生成"和工具一起启动.bat"</strong>。</li>
+</ul>
+
+<h2><span class="n">04</span>三份可以直接读的原始证据</h2>
+<p>其余代码是加密的，但运行时插件包 <code>Tool/mtool-runtime</code> 里有两个<strong>明文 JS</strong>（ZIP，前置 34 字节私有头）。它们恰好是整个方案的心脏。</p>
+
+<h3>① 引导：Agent 以 bytenode 字节码形式被"跑"起来</h3>
+<pre><code><span class="c">// mtool-runtime → node/main.js</span>
+bytenode = require(<span class="s">'bytenode'</span>);
+<span class="k">function</span> launchServerWithBasePath(basePath) {
+  <span class="k">const</span> clientPath = <span class="s">`${basePath}/Client.js.${process.arch}`</span>;
+  <span class="k">const</span> serverPath = <span class="s">`${basePath}/Server.js.${process.arch}`</span>;
+  bytenode.runBytecode(fs.readFileSync(clientPath));   <span class="c">// 先跑 Client</span>
+  bytenode.runBytecode(fs.readFileSync(serverPath));   <span class="c">// 再跑 Server（定义 initServer）</span>
+  process.chdir(process.mainModule.path + <span class="s">"/mtoolWebRoot"</span>);
+  initServer();
+}
+launchServerWithBasePath(<span class="s">`mtoolWebRoot/loaders`</span>);   <span class="c">// 失败写 serverStartFailed 文件</span></code></pre>
+
+<h3>② 握手与鉴权：任务表 + 令牌</h3>
+<pre><code><span class="c">// mtool-runtime → node/GameNodeEMU.js（"给没有 Node 的引擎伪造 Node 环境"）</span>
+global.require = require;  global.module = module;
+global.WebSocket = require(<span class="s">"ws"</span>);
+bytenode.runBytecode(fs.readFileSync(<span class="s">`${basePath}/Client.js.${process.arch}`</span>));
+bytenode.runBytecode(fs.readFileSync(<span class="s">`${basePath}/Server.js.${process.arch}`</span>));
+
+<span class="k">let</span> serverAddr = fs.readFileSync(process.mainModule.path + <span class="s">"/serverURI"</span>);
+client = <span class="k">new</span> Client();
+client.taskHandles.whoareyou = <span class="k">function</span> () { <span class="k">return</span> <span class="s">"gameServer"</span>; };  <span class="c">// 注册身份</span>
+<span class="k">try</span> { client.authToken = fs.readFileSync(… + <span class="s">"/mtoolAuthToken"</span>).toString().trim(); } <span class="k">catch</span> (e) {}
+client.webSocketConnect(<span class="s">`ws://${serverAddr}`</span>);   <span class="c">// 出站连接宿主</span></code></pre>
+<p class="badge ok">这条设计对 macOS 直接可复用：出站连接不受任何系统限制</p>
+
+<h3>③ 字节码里保留的符号，说明了命令面</h3>
+<pre><code><span class="c">// strings loaders/Client.js.arm64（V8 字节码，魔数 C0DE04F5）</span>
+CmdMessageCtor / RetMessageCtor      <span class="c">← 请求/应答消息模型</span>
+sendCmd / replyCmd / hasCmd / sentCmd
+vmeval / evalr / evalNoSerialize / runInThisContext   <span class="c">← 在游戏 VM 内执行代码</span>
+dispatchKeyEv                        <span class="c">← 向游戏注入按键</span>
+/wslikecmd / /contextmenu / wslikecmdUrl</code></pre>
+
+<h2><span class="n">05</span>Android 版怎么跑起来的</h2>
+<table>
+<thead><tr><th>APK</th><th>引擎载体</th><th>关键证据</th></tr></thead>
+<tbody>
+<tr><td><code>mtool_mkxpz</code></td><td>mkxp-z（开源 RGSS 重实现）</td><td><code>libmkxp-z.so</code>、<code>libruby187/193/313.so</code>、<code>assets/RTP/RGSS{,2,3}/…</code></td></tr>
+<tr><td><code>mtool_renpy</code></td><td>Ren'Py 官方 Android 运行时</td><td><code>assets/main.py</code>、<code>runtime-pack.tar.zst</code>、<code>mtool_renpy_font.ttf</code>(21&nbsp;MB)</td></tr>
+<tr><td><code>mtool_easyrpg</code></td><td>EasyRPG Player（RM2000/2003）</td><td><code>libeasyrpg_android.so</code>(15.6&nbsp;MB)、<code>libSDL3.so</code></td></tr>
+<tr><td><code>winlator</code></td><td>Wine + Box64 + XServer</td><td>仅用于纯 Windows 引擎；文案含 <code>winlatorProton9/10/11Container</code></td></tr>
+</tbody>
+</table>
+<p>主程序本身是个壳：包名 <code>app.mtool.mtoolmobile</code>，进程 <code>:MTOOL_MainActivity</code> / <code>:MTOOL_MToolBackend</code>，自建 <code>app.mtool.vfs.*</code> 把 Android SAF 目录映射给 Node 侧；真正的业务在可热更新的运行时包里（<code>manifest.json</code> 带 <code>loaderApiVersion: 5</code> 与逐文件 SHA-256）。</p>
+
+<h2><span class="n">06</span>为什么不能照搬到 macOS</h2>
+<table>
+<thead><tr><th>Windows 手段</th><th>macOS 现实</th></tr></thead>
+<tbody>
+<tr><td><code>CreateRemoteThread</code> + <code>LoadLibrary</code></td><td>需 <code>task_for_pid</code>，SIP 下要 root 且关闭 SIP，<strong>不可分发</strong></td></tr>
+<tr><td><code>winmm.dll</code> / <code>version.dll</code> 搜索顺序劫持</td><td>没有这个机制</td></tr>
+<tr><td>全局 inline hook</td><td>需 entitlement，且会破坏已签名二进制</td></tr>
+<tr><td>命名管道</td><td>没有（只能 Unix socket）</td></tr>
+<tr><td>改写 PE</td><td>无用（Mach-O）</td></tr>
+</tbody>
+</table>
+<div class="neg">
+  <p><strong>负结果也要写清楚</strong>：全量扫描 <code>loaders/*</code>、<code>www/*</code>、<code>Tool/*.dll</code>，没有任何 <code>darwin</code>/<code>dylib</code>/<code>NSApplication</code> 相关字符串；<code>www/rawres/apkvers/</code> 只列了 5 个 APK 目标。<strong>官方从来没有 macOS 版本。</strong></p>
+</div>
+
+<h2><span class="n">07</span>Mac 版的可行路线（按可行性排序）</h2>
+<table>
+<thead><tr><th>引擎</th><th>Mac 上的注入面</th><th>判定</th></tr></thead>
+<tbody>
+<tr><td>RPG Maker MV/MZ、TyranoBuilder</td><td>启动时追加 <code>--remote-debugging-port</code>，走 CDP 注入页面 JS</td><td><span class="badge ok">P0 · 已实测通道</span></td></tr>
+<tr><td>Ren'Py</td><td>投放可逆的 <code>game/mtool_bridge.rpy</code>（引擎自动加载）</td><td><span class="badge ok">P1 · 可行</span></td></tr>
+<tr><td>RM2000/2003</td><td>EasyRPG Player 有 macOS 构建，在文本 API 层挂钩</td><td><span class="badge ok">P2</span></td></tr>
+<tr><td>XP/VX/VXAce</td><td>mkxp-z 自编译 macOS 版挂 Ruby 层，或 Wine 内复用原 DLL</td><td><span class="badge no">P2 · 成本最高</span></td></tr>
+<tr><td>WOLF / 吉里吉里 / Siglus / Unity</td><td>只有 Windows 二进制，依赖 Wine 后端</td><td><span class="badge no">P3</span></td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+  <p>已用真实 Chromium 反向验证过 MV/MZ 那条路：<code>--remote-debugging-port</code> → <code>/json/version</code> → <strong>browser 级 WebSocket + <code>Target.attachToTarget(flatten)</code></strong> → <code>Runtime.evaluate</code> 注入并取回结果；客户端用系统自带 <code>URLSessionWebSocketTask</code> 即可，无需任何第三方库。详见 <code>docs/archive/v0.1/cdp-validation.md</code>。</p>
+</div>
+
+<h2><span class="n">08</span>方法与边界</h2>
+<ul>
+  <li><strong>已证</strong>：宿主技术栈、注入件清单与钩子落点、通信方向与握手、四种注入方式、Android 换引擎策略、无 macOS 版本。</li>
+  <li><strong>未证</strong>：加密模块（216 个）与 V8 字节码的内部业务逻辑。对其中一个样本做过 1–64 字节重复密钥 XOR 穷举，可打印率无改善，判定为流式/分组加密后停止——<strong>这是有边界的负结果，不代表全部内容不可解</strong>。</li>
+  <li><strong>未做</strong>：任何动态运行。本机无 Windows、无 Android 运行时，也没有真实 MV/MZ 游戏样本。</li>
+  <li><strong>合规</strong>：本报告不复刻、不分发 MTool 的任何二进制、字节码或加密模块；Mac 版为净室实现，仅依据公开 API 与协议形状。</li>
+</ul>
+
+<footer>
+  MTool 逆向分析 · 证据档案 <code>docs/re-findings.md</code> · 通道验证 <code>docs/archive/v0.1/cdp-validation.md</code> · 原始导出 <code>analysis/pc/</code>
+</footer>
+
+</div>
+</body>
+</html>

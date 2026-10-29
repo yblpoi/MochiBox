@@ -1,0 +1,85 @@
+%% V0.2 Web 运行后端 —— 启动与终止时序（与 docs/archive/v0.2/architecture-v0.2-web-runner.md §1.2 / §6.4 同源）
+sequenceDiagram
+    autonumber
+    participant CLI as AttachCLI.runPlay
+    participant SC as SessionController
+    participant GL as GameLauncher
+    participant PA as WebPortAssignments
+    participant WR as WebGameRunner
+    participant SRV as StaticWebServer
+    participant BR as BrowserResolver
+    participant OS as Chromium Process
+    participant AD as MVAdapter
+    participant CDP as CDPClient
+
+    Note over CLI,SC: 产品路径（点"启动"）与 --play 走同一段代码，仅入口不同
+
+    SC->>GL: launch(entry, gameRoot, options, log)
+    GL->>GL: resolveStrategy(gameRoot, engine)
+    alt 命中 nwjs.app 布局
+        GL->>OS: run(nwjs, --remote-debugging-port=P)
+        GL-->>SC: LaunchHandle(transport=.nwjs, web=nil)
+    else Web 运行后端
+        GL->>GL: detectWebRoot -> webRoot
+        GL->>GL: allocatePort() -> debugPort
+        GL->>PA: assign(webRoot, 39310, 39409, isFree)
+        PA-->>GL: httpPort（确定性派生 + 持久表）
+        GL->>WR: WebGameRunner(config).start()
+        WR->>SRV: start() 绑定 127.0.0.1:httpPort
+        SRV-->>WR: boundPort
+        WR->>BR: resolve(override, log)
+        alt 找不到浏览器
+            BR-->>WR: throw browser_not_found
+            WR->>SRV: stop()
+            WR-->>GL: throw
+            GL->>PA: release(webRoot)
+            GL->>GL: 释放 debugPort / httpPort
+            GL-->>SC: throw browser_not_found
+        else 找到
+            BR-->>WR: BrowserCandidate + launchArguments
+            WR->>OS: run(chrome, --app=pageURL, --autoplay-policy=..., --user-data-dir=profile, ...)
+            WR->>CDP: waitForReady(debugPort, 15s)
+            CDP-->>WR: ready
+            WR-->>GL: WebRunHandle
+            GL->>GL: webRuns[sessionKey] = WR
+            GL-->>SC: LaunchHandle(transport=.webBrowser, web=descriptor)
+        end
+    end
+
+    SC->>AD: attach(handle, token, config, ...)
+    AD->>CDP: waitForReady / listTargets / attach(page)
+    AD->>AD: AgentInjector.injectAndHandshake
+    AD-->>SC: AttachInfo(pageURL, hooks)
+    SC->>AD: startTextPump()
+    loop 每 250ms
+        AD->>CDP: Runtime.evaluate(__mochibox.drain())
+        CDP-->>AD: envelopes
+        AD-->>SC: onAgentMessage(text payload)
+        SC->>AD: send(.setTranslation(mapKey, ...))
+        AD->>CDP: window.__mochibox.inbox(...)
+    end
+
+    Note over SC,SRV: 静态服务在会话期间持续响应 GET/HEAD/Range（keep-alive）
+
+    SC->>AD: stop()
+    AD->>CDP: push(config disabled) / uninstall()
+    AD->>CDP: close()
+    AD->>GL: terminate(handle)
+
+    Note over GL,SRV: 终止顺序固定（§6.4）：先收浏览器，再收监听与连接，最后释端口
+    GL->>OS: SIGTERM
+    GL->>GL: 等 3s
+    alt 仍存活
+        GL->>OS: SIGKILL
+    end
+    GL->>WR: stop()
+    WR->>SRV: stop()
+    SRV->>SRV: listener.cancel()
+    SRV->>SRV: 逐个 connection.cancel()
+    SRV->>SRV: 关闭全部在飞 FileHandle
+    GL->>GL: webRuns.removeValue(sessionKey)
+    GL->>GL: usedPorts / usedWebPorts 释放
+    GL->>PA: release(webRoot)（保留持久记录，保存档 origin）
+    GL->>GL: ChildProcessRegistry.unregister(pid)
+
+    Note over SRV: 停止后 isPortFree(httpPort) == true 且 activeConnections == 0（AC-7 断言）

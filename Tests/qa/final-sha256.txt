@@ -1,0 +1,51 @@
+# 终版快照 V0.5 —— b178b7d1（欠账收口 D1–D6；team-lead 13:42 构建，QA 13:45–14:05 独立复验）
+#
+# 【本轮改了什么】docs/backlog.md §一 的 D1–D6：
+#   D1 WKWebViewConfiguration 收敛为唯一工厂（KernelWebViewConfiguration.make）
+#   D2 --play 无 --out 时不再误报 "JSONL 写入失败" 并 exit 1
+#   D3 play_e2e.sh work 目录按进程唯一 + 端口占用 exit 2（不再互删日志制造假失败）
+#   D4 新增 --close-after <s>：把 E12「用户关窗」变成自动门禁（reason=user）
+#   D5 --kernel-smoke 输出 autoplay=verified|skipped(no_video)|unverified（盲区显式化）
+#   D6 store_probe 补 R0/R2/R3 四条断言（21 → 25）
+#
+# 【历史】V0.4 = c5de5a5e（tag v0.4.0，b549206）；V0.3 = 96a87474；V0.1 的 1ca5b0c4 早已作废。
+#   产物留存规则不变（2026-10-22 13:20 定调）：版本由 git 管理，**不归档二进制**，build/ 只留最新一次构建。
+#   需要重跑验证 → 从对应 commit 干净重建；重建后 sha 必然变化，所以**每个验证通过的时点必须先提交源码**。
+#   仍然成立的唯一硬约束：别人的验证在飞时禁止重建（build.sh 的 rm -rf build 会抽掉正在跑的产物）。
+#
+b178b7d1f6fbed258d26a7aec9a9b7551adf5cc3ffdb41c1ca62201b8db8ba4c  build/MToolMac.app/Contents/MacOS/MToolMac
+842a3c0b3b2c31f1dd787445295bf13cf3e394700f4175311fe5bc2c38d6ec51  build/MToolMac.app/Contents/Resources/agent_mvmz.js
+842a3c0b3b2c31f1dd787445295bf13cf3e394700f4175311fe5bc2c38d6ec51  Resources/agent_mvmz.js
+#
+# 二进制 mtime: 2026-10-22 13:42:25 +0800，size 2592720 B
+# provenance: find Sources Resources Scripts -newer <bin> -type f → 空
+#   措辞口径：这只证明"源码不晚于二进制、无半写状态"（必要条件），**不是**"二进制由这份源码构建"的充分证明。
+# 打包内 agent 与源码 agent 同 sha（842a3c0b…）→ 打包没有沿用旧 JS；本轮 agent 零改动。
+#
+# ---- QA 独立复验（software-qa-engineer，13:45:40–14:05，全程同一枚 sha，未重建）----
+# 门禁 G1–G15 = 15/15 PASS，ROUTING: NoOne；完整报告 docs/qa-report-v0.5.md
+# selftest        : pass 45 fail 0，not ok 0 条，exit 0
+# store_probe     : pass=25 fail=0（R0a/R0b/R2/R3 新增；--numstat 63 0，旧断言零删除）
+# skip_parity     : pass=9 fail=0
+# lookup_variant  : 9/9 PASS（跑打包内 agent，BUG-11 未复现）
+# play_e2e        : pass 11 fail 0 + PLAY_E2E_PASS，5m33s
+#                   AC-2 captured=4；AC-3 translated=3 replaced=3；AC-4 端口 39366（两次一致）
+# AC-8（真桌面）  : 9 条判据全中，exit 0
+#                   translated=3 jsonl_diamond=3 replaced=3 error_codes=0
+#                   stats=1632 1312 883 175.4（distinct=883，非空白帧，第 132s 首条译文后连抓 3 张取最优）
+#                   kernel=embedded content=816x624 title=<作品窗口标题> scene=Scene_Map
+#                   判据 5 为 QA 读图目视（◇新游戏/◇继续游戏/◇设置），**不是人类签字**
+# D2 无 --out     : captured=1 → exit 0，JSONL 写入失败 0 条；反向对照 --out /tmp → exit 1
+# D3 并发         : 占住 8789 → exit 2 + 三行文案；两次不同 mktemp 目录
+# D4 关窗         : --close-after 20 + duration 120 → 22s 结束、window_closed=1、reason=user、exit 0
+#                   参数面 --close-after abc / 0 / 与 --attach 同用 → 均 exit 2
+# 语义未漂移      : 退出码口径 / status 取值 / "play: http=" 行首 / probe 字段名 / environmentCodes 逐项 diff 无变化
+#
+# ---- 未验证（别当已验）----
+# 1. D5 的 autoplay=skipped(no_video) 分支：工程师用合成页自测通过，QA 只复验了真游戏分支（backlog D14）
+# 2. D3 的 concurrency_hint / web_port_busy 文案分支：仅代码审阅；两个 E2E 实例真并发互跑未做（D14）
+# 3. AC-8 判据 5 的人类签字；GUI 路径点测；真实鼠标点红叉（--close-after 走同一 windowWillClose 分支，不等价）
+# 4. 重建可复现性：本轮铁律禁重建，未验"同源重建是否同 sha"（Swift 构建历史上就不可复现）
+# 5. MV 引擎、其它 MZ 作品、Intel 架构、长时内存曲线、真实翻译质量（本作数据本身是简体中文）
+# 源码提交（本文件所有数字对应的源码）：36e95ec "fix(v0.5): 还清 v0.4 登记在册的六项欠账（D1–D6）"
+# 本提交只回填上面这一行，不改任何源码；验证时二进制为 b178b7d1…，未重建。

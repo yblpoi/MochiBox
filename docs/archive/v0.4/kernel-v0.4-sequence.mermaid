@@ -1,0 +1,128 @@
+%% MochiBox v0.4 —— 四条关键时序（GUI 启动 / --play 启动 / stop 收尾 / 窗口被关）
+%% 与 docs/archive/v0.4/architecture-v0.4-embedded-kernel.md §4.6 同源。
+%% 注意：不要覆盖 docs/archive/v0.1/sequence-diagram.mermaid（v0.1 基线取证件）。
+
+%% ============ (1) GUI 启动 ============
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant MW as MainWindow
+    participant AS as AppState
+    participant SC as SessionController
+    participant AD as MVAdapter
+    participant GL as GameLauncher(actor)
+    participant KR as KernelRegistry
+    participant WK as WKEmbeddedKernel
+    participant SRV as StaticWebServer
+    participant INJ as AgentInjector
+
+    U->>MW: 点「启动」
+    MW->>AS: startSession()
+    AS->>SC: start(entry)
+    SC->>AD: launch(entry, options: LaunchOptions())
+    AD->>GL: launch(...)
+    GL->>GL: resolveStrategy → .webBrowser(webRoot)
+    GL->>GL: kernel = .embedded（非 headless、无 --browser）
+    GL->>GL: httpPort = allocateWebPort(webRoot)  %% 确定性派生，origin 稳定
+    GL->>SRV: start()
+    GL->>KR: await make()（MainActor）
+    KR-->>GL: WKEmbeddedKernel
+    GL->>WK: start(spec: pageURL/816x624/gameTitle/agentScript)
+    WK->>WK: configuration.userContentController.addUserScript(atDocumentStart)
+    WK->>WK: WKWebView(frame:816x624, configuration:) + NSWindow
+    WK->>WK: load(URLRequest(pageURL))；makeKeyAndOrderFront + activate
+    WK-->>GL: EmbeddedKernelHandle(windowNumber, scale)
+    GL-->>AD: LaunchHandle(pid:0, port:httpPort, transport:.embeddedKernel, embedded:…)
+    AD->>GL: await embeddedKernel(sessionKey)
+    GL-->>AD: kernel
+    AD->>WK: makeChannel() → WKPageChannel
+    AD->>INJ: AgentInjector(channel:)
+    AD->>INJ: installEagerly(15s)  %% 轮询 install()，一命中即返回
+    AD->>INJ: injectAndHandshake() → hello(hooks)
+    AD->>INJ: push(.config)
+    AD->>INJ: evaluate(SceneManager._scene) → scene=Scene_Title  %% E15：didFinish 不算跑通
+    AD-->>SC: AttachInfo(pageURL, hooks, usedFlatten=false)
+    SC->>AD: startTextPump()
+    AD->>INJ: drain() 每 250ms（evaluate "window.__mochibox.drain()"）
+    INJ-->>SC: AgentEnvelope[text] → stream.ingest → 管线 → setTranslation
+
+%% ============ (2) --play 启动（窗口模式） ============
+sequenceDiagram
+    autonumber
+    participant SH as shell
+    participant AM as AppMain
+    participant EK as EmbeddedKernelApp
+    participant NSA as NSApplication
+    participant CLI as AttachCLI
+    participant GL as GameLauncher
+    participant WK as WKEmbeddedKernel
+
+    SH->>AM: MochiBox --play <dir> [--out …] [--screenshot …]
+    AM->>AM: 无 --headless 且无 --browser ⇒ 走内置内核
+    AM->>EK: bootstrap(args)
+    EK->>EK: CGSessionCopyCurrentDictionary() == nil ?
+    alt 无 Aqua 会话
+        EK-->>SH: error_code: kernel_no_desktop_session；exit 3
+    end
+    EK->>NSA: NSApplication.shared；setActivationPolicy(.regular)
+    EK->>EK: KernelRegistry.register { WKEmbeddedKernel() }
+    EK->>CLI: Task { run(options, control: PlayControl) }
+    EK->>NSA: app.run()  %% 主 run loop 服务 MainActor
+    CLI->>GL: launch(entry, options(kernel:.embedded))
+    GL->>WK: start(spec) → windowNumber
+    CLI->>SH: play: http=… kernel=embedded content=816x624 scale=2
+    CLI->>SH: play: window_id=41231 title=…
+    CLI->>SH: play: scene=Scene_Title   %% E15：错误页也会 didFinish，必须看场景名
+    CLI->>CLI: attachPhase(handleOverride: handle) → drainPhase(240s)
+    Note over SH,WK: 取证脚本在此期间用 screencapture -l<window_id> 抓真实桌面
+
+%% ============ (3) stop 收尾 ============
+sequenceDiagram
+    autonumber
+    participant SC as SessionController/AttachCLI
+    participant AD as MVAdapter
+    participant INJ as AgentInjector
+    participant GL as GameLauncher
+    participant WK as WKEmbeddedKernel
+    participant SRV as StaticWebServer
+
+    SC->>AD: stop()
+    AD->>AD: pumpTask.cancel()
+    AD->>INJ: push(.config(enabled:false))（尽力，失败不阻塞）
+    AD->>INJ: uninstall()（removeStartupScript）
+    AD->>AD: channel = nil
+    AD->>GL: terminate(handle)
+    GL->>GL: terminatedSessions 去重（幂等）
+    GL->>WK: closeWindow()（isProgrammaticClose = true）
+    WK->>WK: window.close() → windowWillClose
+    WK->>WK: closeSignal.markClosed(reason:"programmatic")
+    GL->>WK: 轮询 isAlive()（≤ killGraceSec）
+    GL->>SRV: stop()（等端口真正可再绑）
+    GL->>GL: usedWebPorts.remove；webPorts.release(webRoot)（持久记录保留）
+    GL-->>AD: 返回
+    AD-->>SC: stateHandler(.stopped)
+
+%% ============ (4) 窗口被用户关掉 ============
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant WK as WKEmbeddedKernel
+    participant SIG as WindowCloseSignal
+    participant AD as MVAdapter（pump 循环）
+    participant CLI as AttachCLI.drainPhase
+    participant GL as GameLauncher
+
+    U->>WK: 点红叉 / ⌘W
+    WK->>WK: windowWillClose（isProgrammaticClose == false）
+    WK->>SIG: markClosed(reason:"user")
+    par pump 侧
+        AD->>AD: evaluate 抛 attachFailed("窗口已关闭")
+        AD->>AD: 连续失败 → 打 window_closed 日志 → 停止 pump
+    and CLI 侧（--play）
+        CLI->>SIG: isClosed == true
+        CLI->>CLI: break drain 循环 → print("play: window_closed=1")
+        CLI->>CLI: report(stats)（captured==0 ⇒ exit 1，不伪造成功）
+        CLI->>GL: terminate(handle) → terminateEmbedded（幂等）
+    and GUI 侧
+        AD->>AD: stateHandler(.stopped) → SessionController 回 idle／「已停止」
+    end

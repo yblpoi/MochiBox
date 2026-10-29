@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>mvstub</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0e12; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="game" width="816" height="400"></canvas>
+<script>
+/*
+ * mv_stub —— **合成替身，非真实 MV 运行时**（docs/architecture.md §0.3）。
+ *
+ * 它只模拟 agent_mvmz.js 会 hook 的最小绘制面：Bitmap / Window_Base / SceneManager，
+ * 以及供 Agent 触发重绘的 window.__stubRepaint()。
+ * 用途：验证"CDP 通道 + Agent + 翻译管线在合成页面上跑通"，
+ * **不代表**与 RPG Maker MV/MZ 兼容（真实引擎兼容性一律列入未验证项）。
+ *
+ * V0.6 追加：`$game*` / `$data*` 假引擎对象（docs/architecture-v0.6-cheat-and-fulltext.md §3/§4.1），
+ * 让 `cheat.*` 与 `text.scan*` 有**可读写**的 MV/MZ 形对象。字段名与真实引擎**逐字对齐**
+ * （`$gameParty._gold` / `$dataItems[id].name` / `$gamePlayer._through` …），
+ * 这样探针断言的是"Agent 真的读写了引擎对象"，而不是"Agent 自己造了个答案"。
+ *
+ * 夹具约定：**所有可扫描字符串在整份夹具里唯一**。因此 `$dataMap`（当前地图）
+ * 故意用一张不在 `$dataMapInfos` 里的图（id=3）：无论 Agent 扫不扫当前地图，
+ * 同一个 raw 都不会出现两次，"扫描无重复 raw"的断言因此与实现选择无关。
+ */
+(function () {
+  'use strict';
+
+  var canvas = document.getElementById('game');
+  var ctx = canvas.getContext('2d');
+
+  // ---------- 控制码处理（**这是替身模拟真实引擎的地方**）----------
+  // 真实 MV/MZ 的 drawTextEx 会**解析并吞掉** `\C[2]` 这类控制码：它只影响颜色/字号，
+  // 不会出现在画面上。替身若不剥掉，截图里就会显示 `\C[2]勇者啊…` ——
+  // 那是"调试字符串"，不是"玩家看到的画面"。
+  //
+  // 注意分工：**Agent 不剥**（控制码必须留在字符串里由引擎解析），剥码是绘制侧的职责。
+  function stripControlCodes(text) {
+    if (typeof text !== 'string') { return text; }
+    var out = '';
+    var i = 0;
+    var single = '{}|!.$><^\\G';
+    while (i < text.length) {
+      var ch = text.charAt(i);
+      if (ch === '\\' && i + 1 < text.length) {
+        var rest = text.slice(i);
+        // 带方括号的：\C[2] / \I[3] / \FS[20] / \N[1] / \V[2] / \P[1] / \PX[2] / \PY[2] / \X[5]
+        var bracket = /^\\[A-Za-z]{1,2}\[[^\]]*\]/.exec(rest);
+        if (bracket) { i += bracket[0].length; continue; }
+        if (single.indexOf(text.charAt(i + 1)) >= 0) { i += 2; continue; }
+      }
+      out += ch;
+      i += 1;
+    }
+    return out;
+  }
+
+  // ---------- Bitmap ----------
+  function Bitmap() {
+    this.fontSize = 28;
+    this.fontFace = '"Hiragino Sans", "Noto Sans CJK JP", sans-serif';
+    this.textColor = '#ffffff';
+  }
+
+  Bitmap.prototype.drawText = function (text, x, y, maxWidth, lineHeight, align) {
+    text = stripControlCodes(text);
+    var size = this.fontSize || 28;
+    ctx.fillStyle = this.textColor || '#ffffff';
+    ctx.font = size + 'px ' + this.fontFace;
+    var width = ctx.measureText(text).width;
+    var drawX = x;
+    if (align === 'center') {
+      drawX = x + ((maxWidth || width) - width) / 2;
+    } else if (align === 'right') {
+      drawX = x + (maxWidth || width) - width;
+    }
+    ctx.fillText(text, drawX, y + size * 0.8);
+    return true;
+  };
+
+  Bitmap.prototype.measureTextWidth = function (text) {
+    ctx.font = (this.fontSize || 28) + 'px ' + this.fontFace;
+    return ctx.measureText(text).width;
+  };
+
+  // ---------- Window_Base ----------
+  function Window_Base() {
+    this.contents = new Bitmap();
+    this.x = 0;
+    this.y = 0;
+    this.width = 816;
+    this.height = 200;
+    this.opacity = 255;
+    this.openness = 255;
+  }
+
+  Window_Base.prototype.drawText = function (text, x, y, maxWidth, align) {
+    return this.contents.drawText(text, x, y, maxWidth, 36, align);
+  };
+
+  Window_Base.prototype.drawTextEx = function (text, x, y) {
+    // 与真实引擎一致：先解析（这里只做"吞掉"）控制码，再绘制纯文本。
+    var plain = stripControlCodes(text);
+    var size = (this.contents && this.contents.fontSize) || 28;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = size + 'px ' + ((this.contents && this.contents.fontFace) || 'sans-serif');
+    ctx.fillText(plain, x, y + size);
+    return plain.length * size;
+  };
+
+  Window_Base.prototype.refresh = function () {
+    /* stub：refresh 由宿主重绘代替 */
+  };
+
+  Window_Base.prototype.close = function () {
+    this.openness = 0;
+  };
+
+  // ---------- Window_Message ----------
+  function Window_Message() {
+    Window_Base.call(this);
+  }
+  Window_Message.prototype = Object.create(Window_Base.prototype);
+  Window_Message.prototype.constructor = Window_Message;
+  Window_Message.prototype.startMessage = function () {
+    return true;
+  };
+  Window_Message.prototype.refresh = function () {
+    /* stub */
+  };
+
+  // ==================================================================
+  // $data* 静态数据（V0.6）
+  // ==================================================================
+  // 每张表以 null 开头（MV/MZ 的 id 从 1 开始）。
+  // 只放 Agent 会读的字段：name / description / iconIndex / price / note / classId …
+
+  // 序号补零：4 位（1200 条素材），3 位会让 200 与 1200 撞成同一个名字。
+  function pad4(n) {
+    return ('0000' + n).slice(-4);
+  }
+
+  var dataItems = [null,
+    { id: 1, name: 'ポーション', description: 'HPを50回復する', iconIndex: 176, price: 50, note: '' },
+    { id: 2, name: 'マジックポーション', description: 'MPを30回復する', iconIndex: 177, price: 120, note: '' },
+    { id: 3, name: '毒消し草', description: '毒状態を治療する', iconIndex: 179, price: 40, note: '' },
+    { id: 4, name: '聖水', description: '呪いを解く聖なる水', iconIndex: 180, price: 90, note: '' },
+    { id: 5, name: 'たいまつ', description: '洞窟の奥を照らす', iconIndex: 181, price: 25, note: '' },
+    { id: 6, name: '帰還の羽', description: '町へ瞬時に戻る', iconIndex: 182, price: 300, note: '' }
+  ];
+
+  // 语料规模：`text.scanStart` 必须**分片 + 可取消**，太小的语料会让 `scanCancel`
+  // 退化成"扫描早就跑完了"。1200 条素材 → 约 2400 条 raw → 12 个 200 条分片；
+  // 每片之间 `setTimeout(0)` 让出，扫描窗口约 30–50ms，取消一定落在扫描中途。
+  // name / description 都带序号，满足"全局唯一"的夹具约定。
+  for (var filler = 1; filler <= 1200; filler++) {
+    dataItems[100 + filler] = {
+      id: 100 + filler,
+      name: '採取素材' + pad4(filler),
+      description: '加工用の素材 番号' + filler,
+      iconIndex: 200,
+      price: 10 + filler,
+      note: ''
+    };
+  }
+
+  var dataWeapons = [null,
+    { id: 1, name: '銅の剣', description: 'ありふれた片手剣', iconIndex: 96, price: 400, wtypeId: 1, note: '' },
+    { id: 2, name: '鉄の槍', description: '間合いの長い得物', iconIndex: 98, price: 900, wtypeId: 2, note: '' },
+    { id: 3, name: '銀の弓', description: '遠くまで届く弓', iconIndex: 100, price: 1500, wtypeId: 3, note: '' }
+  ];
+
+  var dataArmors = [null,
+    { id: 1, name: '旅人の服', description: '動きやすい上着', iconIndex: 128, price: 300, atypeId: 1, etypeId: 1, note: '' },
+    { id: 2, name: '革の鎧', description: '軽くて丈夫な鎧', iconIndex: 129, price: 800, atypeId: 1, etypeId: 1, note: '' },
+    { id: 3, name: '鋼の盾', description: '頑丈なただの盾', iconIndex: 132, price: 1200, atypeId: 2, etypeId: 2, note: '' }
+  ];
+
+  var dataActors = [null,
+    { id: 1, name: 'アレン', nickname: '剣士アレン', profile: '勇敢な剣士。村の自警団の長。', classId: 1, initialLevel: 5, note: '' },
+    { id: 2, name: 'ミナ', nickname: '癒し手ミナ', profile: '癒し手の僧侶。薬草に詳しい。', classId: 2, initialLevel: 4, note: '' },
+    { id: 3, name: 'ゼクス', nickname: '流浪の魔法使い', profile: '流浪の魔法使い。過去を語らない。', classId: 3, initialLevel: 3, note: '' }
+  ];
+
+  var dataClasses = [null,
+    { id: 1, name: '剣士', note: '前衛で戦う' },
+    { id: 2, name: '僧侶', note: '回復を得意とする' },
+    { id: 3, name: '魔法使い', note: '攻撃魔法の使い手' }
+  ];
+
+  var dataSkills = [null,
+    { id: 1, name: '強撃', description: '敵単体に大打撃を与える', iconIndex: 6, mpCost: 5, note: '' },
+    { id: 2, name: 'ヒール', description: '味方一人のHPを回復する', iconIndex: 25, mpCost: 8, note: '' },
+    { id: 3, name: 'ファイア', description: '炎で敵を焼き払う', iconIndex: 66, mpCost: 12, note: '' },
+    { id: 4, name: '守りの盾', description: '防御力を一時的に高める', iconIndex: 30, mpCost: 6, note: '' }
+  ];
+
+  var dataEnemies = [null,
+    { id: 1, name: 'スライム', battlerName: 'Slime', exp: 12, gold: 20, note: '' },
+    { id: 2, name: '洞窟の蝙蝠', battlerName: 'Bat', exp: 18, gold: 35, note: '' }
+  ];
+
+  var dataTroops = [null,
+    { id: 1, name: 'スライム三体', members: [{ enemyId: 1, x: 400, y: 300 }], pages: [] }
+  ];
+
+  var dataStates = [null,
+    { id: 1, name: '毒', message1: 'は毒を浴びた', message2: '', message3: '', message4: '', motion: 1, note: '' },
+    { id: 2, name: '戦闘不能', message1: 'は倒れた', message2: '', message3: '', message4: '', motion: 2, note: '' }
+  ];
+
+  var dataAnimations = [null,
+    { id: 1, name: '打撃エフェクト', animation1Name: 'Hit1', animation2Name: '', note: '' }
+  ];
+
+  var dataTilesets = [null,
+    { id: 1, name: '野外タイル', mode: 1, note: '' }
+  ];
+
+  var dataCommonEvents = [
+    null,
+    { id: 1, name: 'オープニング', trigger: 0, switchId: 1, list: [
+      { code: 401, indent: 0, parameters: ['遠い昔、この地には灯台があった'] },
+      { code: 0, indent: 0, parameters: [] }
+    ] },
+    { id: 2, name: 'エンディング', trigger: 0, switchId: 0, list: [
+      { code: 401, indent: 0, parameters: ['すべての灯りが消えた夜'] },
+      { code: 0, indent: 0, parameters: [] }
+    ] }
+  ];
+
+  var dataSystem = {
+    gameTitle: '灯台の町',
+    versionId: 1,
+    switches: [null, '序盤フラグ', 'ボス撃破', '宝箱開封', '仲間加入', '夜になった', ''],
+    variables: [null, '所持金メモ', '進行度', '勇者の呼び名', '選択された町', '宝箱の数', 'ボスの残り体力', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+    terms: {
+      basic: ['', 'レベル', 'HP', 'MP', 'TP', '経験値'],
+      commands: ['', '戦う', '逃げる', '防御', 'アイテム'],
+      params: ['', '最大HP', '最大MP', '攻撃力', '防御力', '魔法力', '魔法防御', '敏捷性', '運']
+    }
+  };
+
+  var dataMapInfos = [
+    null,
+    { id: 1, name: '始まりの村', parentId: 0, order: 1, expanded: false, scrollX: 0, scrollY: 0 },
+    { id: 2, name: '試練の洞窟', parentId: 0, order: 2, expanded: false, scrollX: 0, scrollY: 0 }
+  ];
+
+  // ---------- 地图（$dataMap = 当前地图；Map001/Map002 走 fetch 拦截）----------
+  function makeEvent(id, name, x, y, note, list) {
+    return { id: id, name: name, x: x, y: y, note: note, pages: [{ condition: {}, list: list, moveRoute: { list: [] } }] };
+  }
+
+  var map001 = {
+    id: 1,
+    displayName: '始まりの村・中央通り',
+    width: 17,
+    height: 13,
+    data: [],
+    // MV/MZ 的 MapNNN.json 里 `events` 是**数组**（下标 = 事件 id，0 恒为 null）。
+    // 写成对象会让 `for (i = 1; i < events.length; i++)` 一条都扫不到 —— 夹具必须与引擎同形。
+    events: [null,
+      makeEvent(1, '村人アン', 4, 5, '表情差分あり', [
+        { code: 401, indent: 0, parameters: ['ようこそ、始まりの村へ'] },
+        { code: 0, indent: 0, parameters: [] }
+      ]),
+      makeEvent(2, '宿屋の主人', 9, 4, '', [
+        { code: 401, indent: 0, parameters: ['一泊二十ゴールドだ'] },
+        { code: 0, indent: 0, parameters: [] }
+      ])
+    ]
+  };
+
+  var map002 = {
+    id: 2,
+    displayName: '試練の洞窟・第一層',
+    width: 20,
+    height: 15,
+    data: [],
+    events: [null,
+      makeEvent(1, '洞窟の番人', 3, 8, '番人の日誌あり', [
+        { code: 401, indent: 0, parameters: ['ここから先は立ち入り禁止だ'] },
+        { code: 0, indent: 0, parameters: [] }
+      ]),
+      makeEvent(2, '転移の魔法陣', 10, 7, '', [
+        { code: 201, indent: 0, parameters: [0, 1, 5, 7, 2, 0] },
+        { code: 0, indent: 0, parameters: [] }
+      ])
+    ]
+  };
+
+  var dataMap = {
+    id: 3,
+    displayName: '灯台の丘',
+    width: 25,
+    height: 20,
+    data: [],
+    events: [null,
+      makeEvent(1, '灯台守', 6, 9, '<TP>', [
+        { code: 401, indent: 0, parameters: ['灯りを絶やすな'] },
+        { code: 0, indent: 0, parameters: [] }
+      ]),
+      makeEvent(2, '転送陣', 12, 4, '', [
+        { code: 201, indent: 0, parameters: [0, 2, 3, 4, 0, 0] },
+        { code: 0, indent: 0, parameters: [] }
+      ])
+    ]
+  };
+
+  // ---------- fetch 拦截：地图 JSON 不依赖网络 ----------
+  // 扫描规则（§4.1）要求 `fetch('data/Map%03d.json')`；替身页可能是 `file://` 打开，
+  // 真实请求必然失败，所以这里就地伪造同源响应。只接管 `MapNNN.json`，其余原样透传。
+  var MAP_FILES = { 1: map001, 2: map002 };
+
+  function makeResponse(status, body) {
+    return {
+      ok: status >= 200 && status < 300,
+      status: status,
+      statusText: status === 200 ? 'OK' : 'Not Found',
+      url: '',
+      headers: { get: function () { return null; } },
+      text: function () { return Promise.resolve(body); },
+      json: function () {
+        return new Promise(function (resolve, reject) {
+          try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+        });
+      }
+    };
+  }
+
+  var nativeFetch = (typeof window.fetch === 'function') ? window.fetch.bind(window) : null;
+  window.fetch = function (input, init) {
+    var url = '';
+    try {
+      url = (typeof input === 'string') ? input : ((input && input.url) || String(input));
+      var matched = /(?:^|\/)Map(\d{3})\.json(?:[?#].*)?$/i.exec(url);
+      if (matched) {
+        var mapId = parseInt(matched[1], 10);
+        if (MAP_FILES[mapId]) { return Promise.resolve(makeResponse(200, JSON.stringify(MAP_FILES[mapId]))); }
+        return Promise.resolve(makeResponse(404, '{}'));
+      }
+    } catch (e) { /* 落到透传 */ }
+    if (nativeFetch) { return nativeFetch(input, init); }
+    return Promise.resolve(makeResponse(404, '{}'));
+  };
+
+  // ==================================================================
+  // $game* 运行期对象
+  // ==================================================================
+
+  var VARIABLE_COUNT = 20;
+  var SWITCH_COUNT = 20;
+
+  // ---------- $gameVariables / $gameSwitches / $gameSelfSwitches ----------
+  var gameVariables = {
+    _data: new Array(VARIABLE_COUNT + 1),
+    value: function (id) {
+      var value = this._data[id];
+      return value === undefined ? 0 : value;
+    },
+    setValue: function (id, value) {
+      this._data[id] = value;
+    }
+  };
+  for (var vi = 0; vi <= VARIABLE_COUNT; vi++) { gameVariables._data[vi] = 0; }
+
+  var gameSwitches = {
+    _data: new Array(SWITCH_COUNT + 1),
+    value: function (id) { return !!this._data[id]; },
+    setValue: function (id, value) { this._data[id] = !!value; }
+  };
+  for (var si = 0; si <= SWITCH_COUNT; si++) { gameSwitches._data[si] = false; }
+
+  var gameSelfSwitches = {
+    _data: {},
+    makeKey: function (key) { return key.join(','); },
+    value: function (key) { return !!this._data[this.makeKey(key)]; },
+    setValue: function (key, value) { this._data[this.makeKey(key)] = !!value; }
+  };
+
+  // ---------- $dataItems 等的身份判定（等价 DataManager.isItem 的三张表查身份）----------
+  function kindOfDataObject(object) {
+    if (!object || typeof object.id !== 'number') { return null; }
+    if (dataItems[object.id] === object) { return 'item'; }
+    if (dataWeapons[object.id] === object) { return 'weapon'; }
+    if (dataArmors[object.id] === object) { return 'armor'; }
+    return null;
+  }
+
+  // ---------- $gameActors ----------
+  function expForLevel(level) {
+    return Math.max(0, (level - 1) * (level - 1) * 30);
+  }
+
+  function Game_Actor(actorId) {
+    var def = dataActors[actorId] || { id: actorId, name: '名無し', classId: 1, initialLevel: 1 };
+    this._actorId = actorId;
+    this._name = def.name;
+    this._nickname = def.nickname || '';
+    this._profile = def.profile || '';
+    this._classId = def.classId || 1;
+    this._level = def.initialLevel || 1;
+    this._exp = expForLevel(this._level);
+    this._hp = 120 + this._level * 8;
+    this._mp = 30 + this._level * 4;
+    this._tp = 0;
+    // [mhp, mmp, atk, def, mat, mdf, agi, luk]
+    this._params = [
+      120 + this._level * 8,
+      30 + this._level * 4,
+      12 + this._level * 2,
+      10 + this._level,
+      9 + this._level,
+      8 + this._level,
+      11 + this._level,
+      7 + this._level
+    ];
+    this._equips = [dataWeapons[(actorId % 3) + 1] || null, null, null, null, null];
+    this._states = [];
+    this._actions = [];
+  }
+
+  // MV 的 `level` 是访问器（读 `_level`）；用非枚举属性，避免 JSON.stringify($gameActors) 爆炸。
+  Object.defineProperty(Game_Actor.prototype, 'level', {
+    get: function () { return this._level; },
+    set: function (value) { this._level = Math.max(1, Math.min(99, value | 0)); },
+    configurable: true,
+    enumerable: false
+  });
+
+  Game_Actor.prototype.actorId = function () { return this._actorId; };
+  Game_Actor.prototype.name = function () { return this._name; };
+  Game_Actor.prototype.nickname = function () { return this._nickname; };
+  Game_Actor.prototype.changeNickname = function (name) { this._nickname = String(name); };
+  Game_Actor.prototype.classId = function () { return this._classId; };
+  Game_Actor.prototype.currentClass = function () { return dataClasses[this._classId] || null; };
+  Game_Actor.prototype.currentExp = function () { return this._exp; };
+  Game_Actor.prototype.expForLevel = function (level) { return expForLevel(level); };
+
+  Game_Actor.prototype.changeClass = function (classId, keepExp) {
+    classId = classId | 0;
+    if (!dataClasses[classId]) { return false; }
+    this._classId = classId;
+    if (!keepExp) { this._exp = expForLevel(this._level); }
+    return true;
+  };
+
+  Game_Actor.prototype.changeExp = function (exp, show) {
+    this._exp = Math.max(0, exp | 0);
+    var level = 1;
+    while (level < 99 && this._exp >= expForLevel(level + 1)) { level++; }
+    this._level = level;
+    this.refresh && this.refresh();
+    return true;
+  };
+
+  Game_Actor.prototype.changeLevel = function (level, show) {
+    this._level = Math.max(1, Math.min(99, level | 0));
+    this._exp = expForLevel(this._level);
+    return true;
+  };
+
+  // hp/mp/tp/mhp/mmp 的形态在 MV 与 MZ 之间是**不一样**的：
+  //   MV（rpg_objects.js）：`Game_BattlerBase.prototype.mhp = function () { … }` —— 方法；
+  //   MZ（rmmz_objects.js:2418）：`Object.defineProperties(… { mhp: { get: … } })` —— 访问器。
+  // 夹具按 **MZ 的访问器形态**写（并保留两版都有的 setHp/setMp/setTp 方法）：
+  // Agent 的 `numericProp()` 声称三种形态都读，夹具必须能测到"getter"这一支，
+  // 否则以后回归只会覆盖方法形态，掩盖真问题。
+  Object.defineProperties(Game_Actor.prototype, {
+    hp: { get: function () { return this._hp; }, set: function (value) { this.setHp(value); }, configurable: true },
+    mp: { get: function () { return this._mp; }, set: function (value) { this.setMp(value); }, configurable: true },
+    tp: { get: function () { return this._tp; }, set: function (value) { this.setTp(value); }, configurable: true },
+    mhp: { get: function () { return this._params[0]; }, configurable: true },
+    mmp: { get: function () { return this._params[1]; }, configurable: true }
+  });
+  Game_Actor.prototype.maxTp = function () { return 100; };
+  Game_Actor.prototype.param = function (paramId) { return this._params[paramId] || 0; };
+  Game_Actor.prototype.params = function () { return this._params.slice(0); };
+
+  Game_Actor.prototype.setHp = function (hp) { this._hp = Math.max(0, Math.min(this.mhp, hp | 0)); return true; };
+  Game_Actor.prototype.setMp = function (mp) { this._mp = Math.max(0, Math.min(this.mmp, mp | 0)); return true; };
+  Game_Actor.prototype.setTp = function (tp) { this._tp = Math.max(0, Math.min(this.maxTp(), tp | 0)); return true; };
+  Game_Actor.prototype.changeHp = function (hp, show) { return this.setHp(hp); };
+  Game_Actor.prototype.changeMp = function (mp, show) { return this.setMp(mp); };
+  Game_Actor.prototype.changeTp = function (tp, show) { return this.setTp(tp); };
+  Game_Actor.prototype.gainHp = function (value) { this.setHp(this._hp + value); return value; };
+  Game_Actor.prototype.gainMp = function (value) { this.setMp(this._mp + value); return value; };
+
+  Game_Actor.prototype.recoverAll = function () {
+    this._hp = this.mhp;
+    this._mp = this.mmp;
+    this._states = [];
+  };
+  Game_Actor.prototype.clearStates = function () { this._states = []; };
+  Game_Actor.prototype.states = function () { return this._states.slice(0); };
+  Game_Actor.prototype.isStateAffected = function (stateId) { return this._states.indexOf(stateId) >= 0; };
+  Game_Actor.prototype.addState = function (stateId) {
+    if (!dataStates[stateId]) { return false; }
+    if (this._states.indexOf(stateId) < 0) { this._states.push(stateId); }
+    return true;
+  };
+  Game_Actor.prototype.eraseState = function (stateId) {
+    var index = this._states.indexOf(stateId);
+    if (index >= 0) { this._states.splice(index, 1); }
+    return true;
+  };
+
+  Game_Actor.prototype.equips = function () { return this._equips.slice(0); };
+  Game_Actor.prototype.changeEquip = function (slotId, item) {
+    if (slotId < 0 || slotId >= this._equips.length) { return false; }
+    if (item && !kindOfDataObject(item)) { return false; }
+    this._equips[slotId] = item || null;
+    return true;
+  };
+  Game_Actor.prototype.isAlive = function () { return this._hp > 0; };
+  Game_Actor.prototype.isDead = function () { return this._hp <= 0; };
+  Game_Actor.prototype.isActor = function () { return true; };
+
+  var gameActors = {
+    _data: {},
+    // 与 rmmz_objects.js 的 Game_Actors#actor 同形：id 不在 $dataActors 范围内返回 null。
+    // 对任意 id 都 new Game_Actor 会让"越界 id"在 contract 层永远观测不到（U-16）。
+    actor: function (actorId) {
+      if (!dataActors[actorId]) { return null; }
+      if (!this._data[actorId]) { this._data[actorId] = new Game_Actor(actorId); }
+      return this._data[actorId];
+    }
+  };
+
+  // ---------- $gameParty ----------
+  var gameParty = {
+    _gold: 1200,
+    _steps: 0,
+    _items: { 1: 3, 2: 1, 3: 2 },
+    _weapons: { 1: 1 },
+    _armors: { 1: 1, 3: 1 },
+    _actors: [1, 2],
+
+    gold: function () { return this._gold; },
+    gainGold: function (amount) {
+      this._gold = Math.max(0, this._gold + (amount | 0));
+      return this._gold;
+    },
+    containerOf: function (item) {
+      var kind = kindOfDataObject(item);
+      if (kind === 'item') { return this._items; }
+      if (kind === 'weapon') { return this._weapons; }
+      if (kind === 'armor') { return this._armors; }
+      return null;
+    },
+    numItems: function (item) {
+      var container = this.containerOf(item);
+      if (!container) { return 0; }
+      return container[item.id] || 0;
+    },
+    hasItem: function (item) { return this.numItems(item) > 0; },
+    maxItems: function () { return 99; },
+    gainItem: function (item, amount) {
+      var container = this.containerOf(item);
+      if (!container) { return false; }
+      var count = (container[item.id] || 0) + (amount | 0);
+      count = Math.max(0, Math.min(this.maxItems(), count));
+      if (count === 0) { delete container[item.id]; } else { container[item.id] = count; }
+      return true;
+    },
+    loseItem: function (item, amount) { return this.gainItem(item, -(amount | 0)); },
+
+    members: function () {
+      var out = [];
+      for (var i = 0; i < this._actors.length; i++) { out.push(gameActors.actor(this._actors[i])); }
+      return out;
+    },
+    allMembers: function () { return this.members(); },
+    addActor: function (actorId) {
+      if (!dataActors[actorId]) { return false; }
+      if (this._actors.indexOf(actorId) < 0) { this._actors.push(actorId); }
+      gameActors.actor(actorId);
+      return true;
+    },
+    removeActor: function (actorId) {
+      var index = this._actors.indexOf(actorId);
+      if (index >= 0) { this._actors.splice(index, 1); }
+      return true;
+    },
+    hasActor: function (actorId) { return this._actors.indexOf(actorId) >= 0; }
+  };
+
+  // ---------- $gamePlayer / $gameMap ----------
+  var gamePlayer = {
+    _x: 8,
+    _y: 6,
+    _realX: 8,
+    _realY: 6,
+    _direction: 2,
+    _through: false,
+    _moveSpeed: 4,
+    _moveRouteForcing: false,
+    _moveRoute: { list: [], repeat: false, skippable: false },
+    _transferMapId: 0,
+    _transferX: 0,
+    _transferY: 0,
+    _transferDirection: 0,
+    _followers: {
+      _visible: true,
+      _data: [],
+      isVisible: function () { return this._visible; },
+      setVisible: function (value) { this._visible = !!value; }
+    },
+
+    setThrough: function (value) { this._through = !!value; },
+    isThrough: function () { return this._through; },
+    setMoveSpeed: function (speed) { this._moveSpeed = Math.max(1, Math.min(6, speed | 0)); },
+    moveSpeed: function () { return this._moveSpeed; },
+    setDirection: function (direction) { this._direction = direction | 0; },
+    setPosition: function (x, y) {
+      this._x = x | 0;
+      this._y = y | 0;
+      this._realX = this._x;
+      this._realY = this._y;
+    },
+    reserveTransfer: function (mapId, x, y, direction) {
+      this._transferMapId = mapId | 0;
+      this._transferX = x | 0;
+      this._transferY = y | 0;
+      this._transferDirection = direction | 0;
+      return true;
+    },
+    performTransfer: function () {
+      if (!this._transferMapId) { return false; }
+      if (this._transferMapId !== gameMap.mapId()) {
+        gameMap._mapId = this._transferMapId;
+        dataMap = MAP_FILES[this._transferMapId] || dataMap;
+        window.$dataMap = dataMap;
+        gameMap._width = dataMap.width;
+        gameMap._height = dataMap.height;
+      }
+      this.setPosition(this._transferX, this._transferY);
+      if (this._transferDirection) { this._direction = this._transferDirection; }
+      this._transferMapId = 0;
+      return true;
+    },
+    clearMoveRoute: function () {
+      this._moveRouteForcing = false;
+      this._moveRoute = { list: [], repeat: false, skippable: false };
+    }
+  };
+  // MV 的 Game_CharacterBase 同时暴露 `x`/`y` 数字属性与 `_x`/`_y`：保持同步。
+  ['x', 'y'].forEach(function (axis) {
+    Object.defineProperty(gamePlayer, axis, {
+      get: function () { return this['_' + axis]; },
+      set: function (value) { this['_' + axis] = value | 0; this['_real' + axis.toUpperCase()] = this['_' + axis]; },
+      enumerable: false,
+      configurable: true
+    });
+  });
+
+  var gameMap = {
+    _mapId: 3,
+    _width: 25,
+    _height: 20,
+    mapId: function () { return this._mapId; },
+    displayName: function () { return (dataMap && dataMap.displayName) || ''; },
+    width: function () { return this._width; },
+    height: function () { return this._height; },
+    isEventRunning: function () { return false; },
+    events: function () {
+      var out = [];
+      var source = (dataMap && dataMap.events) || [];
+      for (var i = 1; i < source.length; i++) {
+        if (source[i]) { out.push(source[i]); }
+      }
+      return out;
+    }
+  };
+
+  // ---------- $gameSystem ----------
+  var gameSystem = {
+    _encounterEnabled: true,
+    _alwaysDash: false,
+    _choiceLock: false,
+    _saveEnabled: true,
+    _menuEnabled: true,
+    _battleCount: 0,
+    _saveCount: 0,
+    enableEncounter: function () { this._encounterEnabled = true; },
+    disableEncounter: function () { this._encounterEnabled = false; },
+    isEncounterEnabled: function () { return this._encounterEnabled; },
+    isSaveEnabled: function () { return this._saveEnabled; },
+    isMenuEnabled: function () { return this._menuEnabled; },
+    setSaveEnabled: function (value) { this._saveEnabled = !!value; }
+  };
+
+  // ---------- $gameScreen / $gameTemp ----------
+  var gameScreen = {
+    _pictures: [{ pictureId: 1, name: 'picture_01.png', opacity: 255 }],
+    _brightness: 255,
+    _fadeSpeed: 0,
+    fadeInStarted: false,
+    fadeOutStarted: false,
+    clearPictures: function () { this._pictures = []; },
+    startFadeIn: function (duration) {
+      this._fadeSpeed = 1 / Math.max(1, duration | 0);
+      this.fadeInStarted = true;
+      this._brightness = 0;
+      return true;
+    },
+    startFadeOut: function (duration) {
+      this._fadeSpeed = -1 / Math.max(1, duration | 0);
+      this.fadeOutStarted = true;
+      return true;
+    }
+  };
+
+  var gameTemp = {
+    _error: null,
+    _errorShowed: false,
+    _waitCount: 0,
+    reserveTransfer: function () { return true; },
+    clearTransferInfo: function () { return true; }
+  };
+
+  // ---------- Graphics / BattleManager ----------
+  var Graphics = {
+    width: 816,
+    height: 400,
+    boxWidth: 816,
+    boxHeight: 400,
+    frameCount: 0,
+    frameRate: 60,
+    renders: 0,
+    _errorShowed: false,
+    _errorPrinter: null,
+    render: function (stage) {
+      this.renders += 1;
+      this.frameCount += 1;
+      return undefined;
+    },
+    isWebGL: function () { return false; },
+    printError: function () { this._errorShowed = true; },
+    setStage: function () { return true; }
+  };
+
+  var BattleManager = {
+    _phase: 'start',
+    _victory: false,
+    _escaped: false,
+    _defeated: false,
+    _canEscape: true,
+    _canLose: false,
+    _actionForcedBattler: null,
+    processVictory: function () { this._phase = 'victory'; this._victory = true; return true; },
+    processEscape: function () { this._phase = 'escape'; this._escaped = true; return true; },
+    processDefeat: function () { this._phase = 'defeat'; this._defeated = true; return true; },
+    battleMembers: function () { return gameParty.allMembers(); },
+    isBattleStart: function () { return true; }
+  };
+
+  // ==================================================================
+  // 场景
+  // ==================================================================
+  function makeSceneClass(name) {
+    var Scene = function () {
+      this._windowLayer = { children: [] };
+      this._window = null;
+      this._messageWindow = null;
+    };
+    Object.defineProperty(Scene, 'name', { value: name });
+    window[name] = Scene;
+    return Scene;
+  }
+
+  var Scene_Title = makeSceneClass('Scene_Title');
+  var Scene_Map = makeSceneClass('Scene_Map');
+  var Scene_Menu = makeSceneClass('Scene_Menu');
+  var Scene_Item = makeSceneClass('Scene_Item');
+  var Scene_Skill = makeSceneClass('Scene_Skill');
+  var Scene_Equip = makeSceneClass('Scene_Equip');
+  var Scene_Status = makeSceneClass('Scene_Status');
+  var Scene_Formation = makeSceneClass('Scene_Formation');
+  var Scene_Save = makeSceneClass('Scene_Save');
+  var Scene_Load = makeSceneClass('Scene_Load');
+  var Scene_Options = makeSceneClass('Scene_Options');
+  var Scene_Debug = makeSceneClass('Scene_Debug');
+  var Scene_Battle = makeSceneClass('Scene_Battle');
+  var Scene_Shop = makeSceneClass('Scene_Shop');
+
+  // ---------- SceneManager ----------
+  var SceneManager = {
+    _scene: null,
+    _nextScene: null,
+    _stack: [],
+    _frameCount: 0,
+
+    update: function () {
+      this._frameCount += 1;
+      // reserveTransfer 的落地：真实引擎在 Scene_Map.update 里调用 performTransfer。
+      try { gamePlayer.performTransfer(); } catch (e) { /* ignore */ }
+    },
+    isCurrent: function (sceneClass) {
+      return !!this._scene && this._scene instanceof sceneClass;
+    },
+    isSceneActive: function () {
+      return !!this._scene && this._scene.constructor && this._scene.constructor.name === 'Scene_Map';
+    },
+    _instantiate: function (sceneClass) {
+      try {
+        var instance = new sceneClass();
+        if (!instance._windowLayer) { instance._windowLayer = { children: [] }; }
+        if (instance.constructor && instance.constructor.name === 'Scene_Map' && !instance._messageWindow) {
+          instance._messageWindow = new Window_Message();
+        }
+        return instance;
+      } catch (e) {
+        return { constructor: sceneClass, _windowLayer: { children: [] }, _messageWindow: null };
+      }
+    },
+    push: function (sceneClass) {
+      this._stack.push(this._scene);
+      this._scene = this._instantiate(sceneClass);
+      return true;
+    },
+    pop: function () {
+      this._scene = this._stack.pop() || this._instantiate(Scene_Map);
+      return true;
+    },
+    goto: function (sceneClass) {
+      this._nextScene = sceneClass;
+      this._scene = this._instantiate(sceneClass);
+      return true;
+    }
+  };
+
+  // ---------- 对白数据 ----------
+  // 第 3 条带转义码，用于验证"转义码位置不变"
+  var MESSAGES = [
+    '魔物が来た',
+    'こんにちは',
+    '\\C[2]勇者よ、目を覚ませ'
+  ];
+
+  var gameMessage = { _texts: MESSAGES.slice(0) };
+
+  // ---------- 初始场景 ----------
+  var scene = SceneManager._instantiate(Scene_Map);
+  scene._messageWindow = new Window_Message();
+  // `cheat.closeAllWindows` 会遍历 `_windowLayer.children`；放两个可 close 的假窗口。
+  scene._windowLayer.children = [
+    { constructor: { name: 'Window_Gold' }, openness: 255, refresh: function () {}, close: function () { this.openness = 0; } },
+    { constructor: { name: 'Window_Command' }, openness: 255, refresh: function () {}, close: function () { this.openness = 0; } }
+  ];
+  SceneManager._scene = scene;
+
+  // ---------- 绘制 ----------
+  function drawScene() {
+    SceneManager.update();
+    Graphics.frameCount += 1;
+    ctx.fillStyle = '#0b0e12';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 顶部状态行（证明页面在持续重绘，并让人眼看见金币/地图确实变了）
+    ctx.fillStyle = '#4a90d9';
+    ctx.font = '18px sans-serif';
+    ctx.fillText(
+      'MV stub · frame ' + SceneManager._frameCount +
+      ' · map ' + gameMap.mapId() +
+      ' · G ' + gameParty._gold,
+      24, 30
+    );
+
+    // 对话框
+    ctx.strokeStyle = '#4a90d9';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(24, 90, 768, 280);
+
+    var window = scene._messageWindow;
+    window.contents.fontSize = 28;
+    for (var i = 0; i < gameMessage._texts.length; i++) {
+      window.drawTextEx(gameMessage._texts[i], 48, 120 + i * 58);
+    }
+  }
+
+  // Agent 命中译文后会调用它触发重绘
+  window.__stubRepaint = function () {
+    try {
+      drawScene();
+    } catch (error) {
+      /* stub 内部异常不影响验证 */
+    }
+  };
+
+  // ---------- 导出给 Agent / 宿主使用 ----------
+  window.Bitmap = Bitmap;
+  window.Window_Base = Window_Base;
+  window.Window_Message = Window_Message;
+  window.SceneManager = SceneManager;
+  window.$gameMessage = gameMessage;
+
+  // 静态数据
+  window.$dataItems = dataItems;
+  window.$dataWeapons = dataWeapons;
+  window.$dataArmors = dataArmors;
+  window.$dataActors = dataActors;
+  window.$dataClasses = dataClasses;
+  window.$dataSkills = dataSkills;
+  window.$dataEnemies = dataEnemies;
+  window.$dataTroops = dataTroops;
+  window.$dataStates = dataStates;
+  window.$dataAnimations = dataAnimations;
+  window.$dataTilesets = dataTilesets;
+  window.$dataCommonEvents = dataCommonEvents;
+  window.$dataSystem = dataSystem;
+  window.$dataMapInfos = dataMapInfos;
+  window.$dataMap = dataMap;
+
+  // 运行期
+  // `Game_Actor` 在 MV/MZ 里是**全局类**（`window.Game_Actor`），插件与作弊 hook 都认这个全局
+  // （例如 Agent 的 godMode 包装 `Game_Actor.prototype.setHp`）。夹具必须同形导出。
+  window.Game_Actor = Game_Actor;
+  window.$gameVariables = gameVariables;
+  window.$gameSwitches = gameSwitches;
+  window.$gameSelfSwitches = gameSelfSwitches;
+  window.$gameActors = gameActors;
+  window.$gameParty = gameParty;
+  window.$gamePlayer = gamePlayer;
+  window.$gameMap = gameMap;
+  window.$gameSystem = gameSystem;
+  window.$gameScreen = gameScreen;
+  window.$gameTemp = gameTemp;
+  window.Graphics = Graphics;
+  window.BattleManager = BattleManager;
+
+  // 探针用的读数口（`__stubRepaint` 的姊妹函数）：把易变的运行期状态一次取回，
+  // 省掉探针里一串 Runtime.evaluate 往返。**只读**，不参与任何作弊实现。
+  window.__stubState = function () {
+    return JSON.stringify({
+      scene: (SceneManager._scene && SceneManager._scene.constructor && SceneManager._scene.constructor.name) || null,
+      mapId: gameMap.mapId(),
+      gold: gameParty._gold,
+      player: { x: gamePlayer._x, y: gamePlayer._y, dir: gamePlayer._direction, through: gamePlayer._through, speed: gamePlayer._moveSpeed },
+      party: gameParty._actors.slice(0),
+      variables: gameVariables._data,
+      switches: gameSwitches._data,
+      selfSwitches: gameSelfSwitches._data,
+      encounter: gameSystem._encounterEnabled,
+      alwaysDash: gameSystem._alwaysDash,
+      followersVisible: gamePlayer._followers._visible,
+      battle: BattleManager._phase,
+      items: gameParty._items,
+      weapons: gameParty._weapons,
+      armors: gameParty._armors,
+      actors: Object.keys(gameActors._data).map(function (id) {
+        var actor = gameActors._data[id];
+        return { id: actor.actorId(), level: actor._level, exp: actor._exp, hp: actor._hp, mp: actor._mp };
+      })
+    });
+  };
+
+  drawScene();
+  // 持续重绘：即使宿主尚未下发 inbox，也能持续产生采集事件
+  setInterval(drawScene, 400);
+})();
+</script>
+</body>
+</html>

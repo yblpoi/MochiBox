@@ -1,0 +1,9 @@
+{
+  "gameTitle": "E2E Fixture",
+  "locale": "ja_JP",
+  "currencyUnit": "G",
+  "advanced": {
+    "screenWidth": 816,
+    "screenHeight": 624
+  }
+}

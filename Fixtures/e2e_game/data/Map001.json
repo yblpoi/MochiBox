@@ -1,0 +1,9 @@
+{
+  "displayName": "E2E Map",
+  "width": 2,
+  "height": 2,
+  "note": "",
+  "tilesetId": 1,
+  "data": [0, 0, 0, 0],
+  "events": [null]
+}
