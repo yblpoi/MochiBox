@@ -66,10 +66,19 @@ enum EngineKind: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// 缓存键里的 `engineFamily`。
+    /// 缓存键里的 `engineFamily`（也是文本码表的选择依据：见 `LegacyEscapeCodec.skeleton`）。
+    ///
+    /// 三条硬约束：
+    ///   · `mv`/`mz` **必须**是 `"mvmz"`，逐字节不动 —— 它进 cacheKey 材料，
+    ///     改一个字符就是全量历史缓存 miss、重新计费；
+    ///   · `rgss1/rgss2/rgss3` 收敛成**一个** `"rgss"`：三版共用同一套 `\C[n]` 码表，
+    ///     拆成三个家族只会把同一句译文存三份、命中率除以三；
+    ///   · `easyrpg` 保持独立（2000/2003 的码表与 RGSS 不同）。
     var family: String {
         switch self {
         case .mv, .mz: return "mvmz"
+        case .rgss1, .rgss2, .rgss3: return "rgss"
+        case .easyrpg: return "easyrpg"
         default: return rawValue
         }
     }

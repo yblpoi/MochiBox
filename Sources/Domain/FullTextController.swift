@@ -109,6 +109,10 @@ final class FullTextController: ObservableObject {
     private var scanEstimated: Int = 0
     private var srcLang: String = K.fixedSrcLang
     private var tgtLang: String = K.fixedTgtLang
+    /// 本会话的引擎族（`EngineKind.family`）。默认 `K.engineFamily`（mvmz）——
+    /// SelfTest 与 e2e 探针有 28 处直接用那个常量，默认值让它们一行都不用改。
+    /// 全文链路与实时链路**必须**用同一个值，否则同一句在两条路上算出不同的 cacheKey。
+    private var engineFamily: String = K.engineFamily
 
     /// 翻译游标：从上次停下的位置继续（避免每批都从头扫 10k 条）。
     private var cursor: Int = 0
@@ -165,6 +169,7 @@ final class FullTextController: ObservableObject {
         gameHash: String,
         srcLang: String,
         tgtLang: String,
+        engineFamily: String = K.engineFamily,
         sendTranslations: @escaping @Sendable ([TranslationPushItem]) async -> Void,
         sendClear: (@Sendable () async -> Void)? = nil,
         log: SessionLog? = nil,
@@ -181,6 +186,8 @@ final class FullTextController: ObservableObject {
         self.pipeline = pipeline
         self.store = store
         self.glossaryStore = glossaryStore
+        // 码表与缓存键都按它分派：调用方传 `entry.engine.family`（mvmz / easyrpg / rgss）。
+        self.engineFamily = engineFamily
         // 换游戏 ≠ 同一款重连。本控制器是 App 进程级单例（`SessionController.fullText`），
         // `detach()` 保留语料只对"同一 gameHash 重连后整体重放"成立（见 detach 注释）。
         // 不在这里清：第二款游戏打开时上一款的条目会被一起下发，而且 `loadPersisted()`
@@ -356,7 +363,7 @@ final class FullTextController: ObservableObject {
             if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
             let isNew = corpus.insert(raw: raw, source: item.source, path: item.path)
             if isNew {
-                let skeleton = Segmenter.splitSegments(raw: raw, engineFamily: K.engineFamily)
+                let skeleton = LegacyEscapeCodec.skeleton(raw: raw, engineFamily: engineFamily)
                 let key = GlossaryKey.normalize(Segmenter.joinForBackend(skeleton))
                 if !key.isEmpty {
                     categoryByTextKey[key] = TranslationCategory.inferred(source: item.source, path: item.path)
@@ -582,7 +589,7 @@ final class FullTextController: ObservableObject {
         var seenKeys: Set<String> = []
         let snapshot = glossary
         for entry in batch {
-            let skeleton = Segmenter.splitSegments(raw: entry.raw, engineFamily: K.engineFamily)
+            let skeleton = LegacyEscapeCodec.skeleton(raw: entry.raw, engineFamily: engineFamily)
             // 全 code 行（`\i[17]`）没有可翻的文本段，与运行期一致地跳过。
             guard Segmenter.textSegmentCount(skeleton) > 0 else {
                 skippedRaws.insert(entry.raw)
@@ -604,7 +611,7 @@ final class FullTextController: ObservableObject {
             let hints = snapshot.pairs(in: [text], includeSingleChar: allowSingle)
             let profile = profileId(for: category, pairs: hints)
             let key = Segmenter.cacheKey(
-                engineFamily: K.engineFamily,
+                engineFamily: engineFamily,
                 srcLang: srcLang,
                 tgtLang: tgtLang,
                 segments: skeleton,
@@ -669,7 +676,7 @@ final class FullTextController: ObservableObject {
             guard entry.origin != .manual, entry.isTranslated else { continue }
             guard entry.issues.contains(QualityIssue.glossaryViolation.rawValue) else { continue }
             guard let translated = entry.translated else { continue }
-            let skeleton = Segmenter.splitSegments(raw: entry.raw, engineFamily: K.engineFamily)
+            let skeleton = LegacyEscapeCodec.skeleton(raw: entry.raw, engineFamily: engineFamily)
             let text = Segmenter.joinForBackend(skeleton)
             let pairs = snapshot.violations(raw: text, translated: translated, category: entry.category)
             // 检查之后术语被改过（用户编辑 / 删墓碑）：现在不违例，不必再花钱。
@@ -840,10 +847,21 @@ final class FullTextController: ObservableObject {
     /// keepAsIs 也写回（target == 原文）：这样进度条能到 100%、行状态是「已译」、
     /// 导出也一致；若记成 skipped，pending 分母永远差这几条。
     private func applyGlossaryTranslation(entry: FullTextEntry, target: String, profile: String) {
-        let skeleton = Segmenter.splitSegments(raw: entry.raw, engineFamily: K.engineFamily)
+        let skeleton = LegacyEscapeCodec.skeleton(raw: entry.raw, engineFamily: engineFamily)
         do {
             let segments = try Segmenter.translatedSegments(segments: skeleton, translatedText: target)
             let reassembled = try Segmenter.reassemble(segments: skeleton, translatedText: target)
+            // 控制码完整性（老引擎）：Segmenter 只保段数与顺序，改码它看不出来。
+            // 用 throw 汇入本函数已有的 catch —— 那里会记 failedRaws + segmentMismatch，
+            // 与"段数不符"走同一条失败处置，不额外发明错误码。
+            let codeProblems = LegacyEscapeCodec.controlCodeProblems(
+                raw: entry.raw,
+                reassembled: reassembled,
+                engineFamily: engineFamily
+            )
+            guard codeProblems.isEmpty else {
+                throw MochiBoxError(code: .segmentMismatch, message: "术语译文控制码不一致：\(codeProblems.joined(separator: " | "))")
+            }
             let issues = FullTextQuality.check(
                 raw: entry.raw,
                 translated: reassembled,
@@ -874,10 +892,26 @@ final class FullTextController: ObservableObject {
     private func applyTranslated(key: String, translatedText: String, cached: Bool) {
         guard let info = inFlight.removeValue(forKey: key) else { return }
         outstanding.remove(key)
+        // 模型给的文本里不许混入控制码：这条与行无关，一次算完扇出到共享该 key 的所有行
+        // （每行自己的骨架在下面逐行校验，见 codeProblems）。mvmz 族直接返回空数组。
+        let textProblems = LegacyEscapeCodec.translatedTextProblems(translatedText, engineFamily: engineFamily)
         for entry in info.entries {
             do {
                 let segments = try Segmenter.translatedSegments(segments: entry.skeleton, translatedText: translatedText)
                 let reassembled = try Segmenter.reassemble(segments: entry.skeleton, translatedText: translatedText)
+                // 逐行按本行原文校验控制码：共享 cacheKey 的行控制码可以不同，
+                // 用首行的 raw 校验别行会误报/漏报（与 SessionController 那条"不存 raw"同因）。
+                let codeProblems = LegacyEscapeCodec.controlCodeProblems(
+                    raw: entry.raw,
+                    reassembled: reassembled,
+                    engineFamily: engineFamily
+                )
+                guard codeProblems.isEmpty, textProblems.isEmpty else {
+                    throw MochiBoxError(
+                        code: .segmentMismatch,
+                        message: "译文控制码不一致：\((codeProblems + textProblems).joined(separator: " | "))"
+                    )
+                }
                 let previous = corpus.entry(for: entry.raw)
                 let hadIssues = !(previous?.issues.isEmpty ?? true)
                 let category = previous?.category ?? .other
@@ -972,10 +1006,10 @@ final class FullTextController: ObservableObject {
         var dropped = 0
         for entry in ready {
             guard let translated = entry.translated, !translated.isEmpty else { continue }
-            let rawSegments = Segmenter.splitSegments(raw: entry.raw, engineFamily: K.engineFamily)
+            let rawSegments = LegacyEscapeCodec.skeleton(raw: entry.raw, engineFamily: engineFamily)
             if Segmenter.textSegmentCount(rawSegments) == 0 { continue }
             let translatedSegments = entry.segments
-                ?? Segmenter.splitSegments(raw: translated, engineFamily: K.engineFamily)
+                ?? LegacyEscapeCodec.skeleton(raw: translated, engineFamily: engineFamily)
             // 文本段数对不上就不可能安全重组（Agent 的 `mergeBySkeleton` 会拒绝拼接），
             // 与其下发一条"永远画原文"的废条目，不如计入 dropped 让 UI 说出来。
             guard Segmenter.textSegmentCount(translatedSegments) == Segmenter.textSegmentCount(rawSegments) else {
@@ -1095,7 +1129,7 @@ final class FullTextController: ObservableObject {
         guard source.count <= 24, translated.count <= 32 else { return false }
         guard !source.contains("%"), !translated.contains("%") else { return false }
         guard !source.contains("\n"), !translated.contains("\n") else { return false }
-        let skeleton = Segmenter.splitSegments(raw: source, engineFamily: K.engineFamily)
+        let skeleton = LegacyEscapeCodec.skeleton(raw: source, engineFamily: engineFamily)
         guard Segmenter.textSegmentCount(skeleton) == 1 else { return false }
         guard translated != source else { return false }
         // 纯 ASCII 不学：这类词要么已在种子表 keepAsIs，要么是标识符。
@@ -1258,7 +1292,7 @@ final class FullTextController: ObservableObject {
 
     private func needsRetranslation(_ entry: FullTextEntry) -> Bool {
         guard entry.isTranslated, entry.origin != .manual else { return false }
-        let skeleton = Segmenter.splitSegments(raw: entry.raw, engineFamily: K.engineFamily)
+        let skeleton = LegacyEscapeCodec.skeleton(raw: entry.raw, engineFamily: engineFamily)
         let text = Segmenter.joinForBackend(skeleton)
         let pairs = glossary.pairs(in: [text], includeSingleChar: entry.category.allowsSingleCharTerms)
         let current = profileId(for: entry.category, pairs: pairs)
@@ -1357,7 +1391,7 @@ final class FullTextController: ObservableObject {
             $0.key.utf8.lexicographicallyPrecedes($1.key.utf8)
         }
         for (raw, rawCategory) in categoryRows {
-            let skeleton = Segmenter.splitSegments(raw: raw, engineFamily: K.engineFamily)
+            let skeleton = LegacyEscapeCodec.skeleton(raw: raw, engineFamily: engineFamily)
             let key = GlossaryKey.normalize(Segmenter.joinForBackend(skeleton))
             guard !key.isEmpty, categoryByTextKey[key] == nil else { continue }
             categoryByTextKey[key] = TranslationCategory(rawValue: rawCategory) ?? .other
@@ -1419,7 +1453,7 @@ final class FullTextController: ObservableObject {
         }
         return FullTextFile(
             gameHash: gameHash,
-            engine: K.engineFamily,
+            engine: engineFamily,
             srcLang: srcLang,
             tgtLang: tgtLang,
             entries: entries,
@@ -1521,8 +1555,8 @@ final class FullTextController: ObservableObject {
                 if corpus.entry(for: raw) == nil {
                     corpus.insert(raw: raw, source: "manual", path: "")
                 }
-                let rawSegments = Segmenter.splitSegments(raw: raw, engineFamily: K.engineFamily)
-                let translatedSegments = Segmenter.splitSegments(raw: value, engineFamily: K.engineFamily)
+                let rawSegments = LegacyEscapeCodec.skeleton(raw: raw, engineFamily: engineFamily)
+                let translatedSegments = LegacyEscapeCodec.skeleton(raw: value, engineFamily: engineFamily)
                 let usable = Segmenter.textSegmentCount(rawSegments) == Segmenter.textSegmentCount(translatedSegments)
                     ? translatedSegments
                     : nil

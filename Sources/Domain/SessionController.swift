@@ -136,6 +136,11 @@ final class SessionController: ObservableObject {
     private var adapter: MVAdapter?
     private var pipeline: TranslationPipeline?
     private var currentEntry: GameEntry?
+
+    /// 本会话的引擎族（`EngineKind.family`）。缓存键、码表、文本流标注三处必须同源 ——
+    /// 不同源的症状是同一句在实时链路与缓存里被当成两个引擎的文本（缓存永不命中）。
+    /// 没有会话（未启动/已停）时退回 mvmz，与改动前行为逐字节一致。
+    private var engineFamily: String { return currentEntry?.engine.family ?? K.engineFamily }
     private var sessionId: String = ""
     private var sessionToken: String = ""
     /// V0.6 RPC 通道（会话级：随 attach 建立、随 stop 关闭）。
@@ -466,6 +471,8 @@ final class SessionController: ObservableObject {
             gameHash: hash,
             srcLang: settings.srcLang,
             tgtLang: settings.tgtLang,
+            // 与实时链路同一个家族（`engineFamily` 取自 currentEntry，这里就是 entry）。
+            engineFamily: entry.engine.family,
             sendTranslations: { [weak self] items in
                 await self?.sendFullTextTranslations(items)
             },
@@ -681,7 +688,7 @@ final class SessionController: ObservableObject {
         let hints = glossaryBox.pairs(in: joined, includeSingleChar: allowSingle)
         let profile = TranslationProfile.id(category: category, pairs: hints)
         let cacheKey = Segmenter.cacheKey(
-            engineFamily: K.engineFamily,
+            engineFamily: engineFamily,
             srcLang: settings.srcLang,
             tgtLang: settings.tgtLang,
             segments: payload.segments,
@@ -694,7 +701,14 @@ final class SessionController: ObservableObject {
             "cacheKey": String(cacheKey.prefix(8))
         ])
 
-        stream.ingest(payload, cacheKey: cacheKey, sessionId: sessionId, gameId: currentEntry?.id ?? "")
+        stream.ingest(
+            payload,
+            cacheKey: cacheKey,
+            sessionId: sessionId,
+            gameId: currentEntry?.id ?? "",
+            // 文本流里的 engine 是排障标记：不传就恒为 mvmz，老引擎的行会被标错族。
+            engine: engineFamily
+        )
 
         // §7.8 规范顺序：normalizeForKey（在 SkipRules 内部）→ skipReason → 缓存 → 入队。
         // 命中 skip 即终止：不入队、不查缓存、不写缓存。
@@ -785,6 +799,20 @@ final class SessionController: ObservableObject {
             }
             if let segments = try? Segmenter.translatedSegments(segments: payload.segments, translatedText: term.target),
                let raw = try? Segmenter.reassemble(segments: payload.segments, translatedText: term.target) {
+                // 术语表译文同样可能带控制码（用户手编过、或术语本身含反斜杠）：按引擎族校验，
+                // 不一致就整条报错 —— 宁可这一行显示原文，也不把改过的码画进游戏。
+                let problems = LegacyEscapeCodec.controlCodeProblems(
+                    raw: payload.raw,
+                    reassembled: raw,
+                    engineFamily: engineFamily
+                )
+                guard problems.isEmpty else {
+                    log.error("SessionController", "术语译文控制码不一致，整条丢弃", [
+                        "problems": problems.joined(separator: " | ")
+                    ])
+                    stream.applyError(cacheKey: cacheKey, error: ErrorInfo(code: .segmentMismatch))
+                    return
+                }
                 delivered[cacheKey] = (segments: segments, backend: settings.effectiveBackend)
                 stream.applyTranslation(
                     cacheKey: cacheKey,
@@ -812,6 +840,22 @@ final class SessionController: ObservableObject {
         case .hit(let result):
             guard let segments = try? Segmenter.translatedSegments(segments: payload.segments, translatedText: result.translatedText),
                   let raw = try? Segmenter.reassemble(segments: payload.segments, translatedText: result.translatedText) else {
+                stream.applyError(cacheKey: cacheKey, error: ErrorInfo(code: .segmentMismatch))
+                return
+            }
+            // 控制码完整性（老引擎）：Segmenter 只保证段数与顺序，把 \\c[3] 改成 \\c[4] 它看不出来。
+            // 两条判据都要过：① 拼回串的码值与原文逐项一致；② 模型给的文本段里不许混入码
+            // （② 与行无关，能覆盖共享同一 cacheKey、但控制码不同的其他行）。
+            // mvmz 族两条都直接返回空数组，不改变现有行为。
+            let problems = LegacyEscapeCodec.controlCodeProblems(
+                raw: payload.raw,
+                reassembled: raw,
+                engineFamily: engineFamily
+            ) + LegacyEscapeCodec.translatedTextProblems(result.translatedText, engineFamily: engineFamily)
+            guard problems.isEmpty else {
+                log.error("SessionController", "译文控制码不一致，整条丢弃", [
+                    "problems": problems.joined(separator: " | ")
+                ])
                 stream.applyError(cacheKey: cacheKey, error: ErrorInfo(code: .segmentMismatch))
                 return
             }
@@ -892,6 +936,18 @@ final class SessionController: ObservableObject {
                   let raw = try? Segmenter.reassemble(segments: segments, translatedText: item.translatedText) else {
                 // 段数不匹配等单条失败：同样要落 `.error`，不能静默跳过（否则该行永远 pending）。
                 stream.applyError(cacheKey: item.key, error: result.error ?? ErrorInfo(code: .segmentMismatch))
+                continue
+            }
+            // 批量落地路径**没有原文 raw**：本类刻意不按 cacheKey 存 raw（同一 cacheKey 的
+            // 每行控制码可以不同，存首行会把别人的码值画到这一行）。所以这里用与行无关的判据：
+            // 老引擎的最终串里每个码都必须来自各自骨架，只要模型给的文本段里一个码都没有，
+            // 逐行重组就必然与各自骨架一致（mvmz 族返回空数组，不改变现有行为）。
+            let textProblems = LegacyEscapeCodec.translatedTextProblems(item.translatedText, engineFamily: engineFamily)
+            guard textProblems.isEmpty else {
+                log.error("SessionController", "批量译文里混入控制码，整条丢弃", [
+                    "problems": textProblems.joined(separator: " | ")
+                ])
+                stream.applyError(cacheKey: item.key, error: ErrorInfo(code: .segmentMismatch))
                 continue
             }
             delivered[item.key] = (segments: segments, backend: result.backend)

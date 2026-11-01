@@ -38,6 +38,9 @@ export const SRC = {
   // 所以这一档必须带上 Translators（它本身不依赖管线）。
   store: () => [
     ...SOURCES.domain(),
+    // 经典 RM 码表：FullTextController 的骨架构造走 LegacyEscapeCodec.skeleton(...)，
+    // 所以只要编到 FullTextController 的那几档都必须带上它（叶子文件，无额外依赖）。
+    s('Sources/Domain/LegacyEscapeCodec.swift'),
     s('Sources/Infra/Stores.swift'),
     s('Sources/Infra/Translators.swift')
   ],
