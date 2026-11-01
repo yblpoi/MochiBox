@@ -124,6 +124,16 @@ struct LCFProbe {
               decoded.encoding == .shiftJIS && decoded.text == "%S はテレポートを唱えた！",
               "encoding=\(decoded.encoding.rawValue) text=\(decoded.text)")
 
+        // 编码回归：GB18030 解 SJIS「の攻撃！」得到的是「偺峌寕両」——**同样是汉字**，
+        // 只看字符类分不出来，所以必须整库扫"判成 GB18030 却含假名"的字段。
+        let mojibake2000 = nonEmpty.filter { entry in
+            guard let decoded = try? LCFTextCodec.decode(entry.raw) else { return false }
+            return decoded.encoding == .gb18030
+                && decoded.text.unicodeScalars.contains { (0x3040...0x30FF).contains($0.value) }
+        }
+        check("L8b", "rm2000 没有「判成 GB18030 却含假名」的字段", mojibake2000.isEmpty,
+              "命中 \(mojibake2000.prefix(3).map(\.path))")
+
         let cmd = db.bytes(at: "commonevents[1].event_commands[0].string")
         check("L9", "事件命令文本可按路径寻址", cmd == Data("Hello from Common Event".utf8),
               "got=\(cmd.map(hex) ?? "nil")")
@@ -149,6 +159,23 @@ struct LCFProbe {
         check("L14", "2003 库里有 classes[0].name 与 battleranimations[0].name",
               cls == Data("Hero A".utf8) && ba == Data("Male Hero".utf8),
               "classes=\(cls.map(hex) ?? "nil") ba=\(ba.map(hex) ?? "nil")")
+
+        // 日文假名是 Shift-JIS 的**决定性**信号：rm2003 的 skills[].using_message1 是
+        // 原版日文（の攻撃！），一旦被判成 GB18030，翻译链路拿到的就是生僻字乱码。
+        let skill3 = db3.bytes(at: "skills[0].using_message1")
+        let wantSkill3 = Data([0x82, 0xcc, 0x8d, 0x55, 0x8c, 0x82, 0x81, 0x49])
+        let decoded3 = try LCFTextCodec.decode(skill3 ?? Data())
+        check("L14b", "rm2003 skills[0].using_message1 判成 Shift-JIS 并解出「の攻撃！」",
+              skill3 == wantSkill3 && decoded3.encoding == .shiftJIS && decoded3.text == "の攻撃！",
+              "bytes=\(skill3.map(hex) ?? "nil") encoding=\(decoded3.encoding.rawValue) text=\(decoded3.text)")
+
+        let mojibake2003 = db3.allStrings().filter { entry in
+            guard !entry.raw.isEmpty, let decoded = try? LCFTextCodec.decode(entry.raw) else { return false }
+            return decoded.encoding == .gb18030
+                && decoded.text.unicodeScalars.contains { (0x3040...0x30FF).contains($0.value) }
+        }
+        check("L14c", "rm2003 没有「判成 GB18030 却含假名」的字段", mojibake2003.isEmpty,
+              "命中 \(mojibake2003.prefix(3).map(\.path))")
 
         // ---- 编码判定 ----
         let aU8 = Data("あ".utf8)

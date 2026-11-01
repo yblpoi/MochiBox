@@ -86,6 +86,27 @@ enum LCFTextCodec {
         if data.isEmpty { return .utf8 }
         guard hasMultibyteRun(data) else { return .shiftJIS }
 
+        // ── 先看两个**决定性**信号，再交给打分 ──
+        //
+        // 打分解决的是"GBK 与 UTF-8 互相冒充"，但它分不清"真日文"和"把日文按 GB18030
+        // 解出来的生僻字"：两者都是汉字。实测反例（本仓库 Fixtures/rm2003 里就有）：
+        //   SJIS「の攻撃！」82 CC 8D 55 8C 82 81 49 → 假名14+汉字12+汉字12+全角！4 = 10.5 分
+        //   GB18030 同字节             → 偺峌寕両 = 汉字 12×4 = 12 分  ← 打分反而判给 GB18030
+        // 也就是任何"假名 + 全角标点"的日文都会被解成生僻字再送进翻译。所以：
+        //
+        //   1) 合法 UTF-8 且解出 CJK/假名 → UTF-8。
+        //      这是"已经翻译过"的强信号；GBK 字节冒充 UTF-8 时解出的是西里尔字母
+        //      （GBK「药水」D2 A9 CB AE → ҩˮ），不含 CJK，不会被这条误判。
+        //   2) Shift-JIS 能解且含假名 → Shift-JIS。
+        //      假名几乎只出现在日文里；GBK 的常用前导字节（0xA1–0xF7）在 Shift-JIS
+        //      里不是合法前导，中文文本解不出假名。
+        if let text = try? decode(data, as: .utf8), containsCJKOrKana(text) {
+            return .utf8
+        }
+        if let text = try? decode(data, as: .shiftJIS), containsKana(text) {
+            return .shiftJIS
+        }
+
         var best: (encoding: Encoding, score: Int)?
         // 顺序即同分时的优先级：UTF-8 优先，其次 Shift-JIS，最后 GB18030。
         for candidate in [Encoding.utf8, .shiftJIS, .gb18030] {
@@ -140,6 +161,28 @@ enum LCFTextCodec {
         // ISO-8859-1 是无损兜底：任意字节序列都能映射成字符，保证不丢内容。
         if let text = String(data: data, encoding: .isoLatin1) { return (text, .utf8) }
         throw LCFError.encodeFailed(encoding: encoding.rawValue)
+    }
+
+    /// 汉字 / 假名（全角片假名算）。用于判定"这段字节解出来像不像 CJK 文本"。
+    private static func containsCJKOrKana(_ text: String) -> Bool {
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF:
+                return true
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
+    /// 只认全角假名（平假名 + 片假名）。半角片假名（U+FF61–FF9F）**不算**：
+    /// 那是"把 GBK 字节按 Shift-JIS 解"的典型产物，不能拿它证明这是日文。
+    private static func containsKana(_ text: String) -> Bool {
+        for scalar in text.unicodeScalars where (0x3040...0x30FF).contains(scalar.value) {
+            return true
+        }
+        return false
     }
 
     /// 是否含非 ASCII 字节：纯 ASCII 在三种编码下等价，不需要走"试解码"。
