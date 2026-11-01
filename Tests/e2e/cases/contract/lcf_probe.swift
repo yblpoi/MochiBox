@@ -230,6 +230,35 @@ struct LCFProbe {
               Double(afterSize) <= Double(beforeSize) * 1.05,
               "before=\(beforeSize) after=\(afterSize)")
 
+        // ---- 2003 写回：ldb_id 必须活下来 ----
+        // 版本的唯一判据是 db.system.ldb_id == 2003（liblcf saveopt.cpp:6-11）。
+        // 一旦保存把 ldb_id 写成 0，classes / battleranimations 会被当作 e2k 数据
+        // **静默丢弃**，而 Save 照样返回 true。所以在 2003 的副本上改一条、存、重开，
+        // 2003 专有结构必须还在（档的是"换版本"，不是"能加载"）。
+        let copy3 = work.appendingPathComponent("RPG_RT_2003.ldb")
+        try FileManager.default.copyItem(at: rm2003, to: copy3)
+        let editor3 = try LCFDatabase(contentsOf: copy3)
+        let heroNameBefore = try editor3.bytes(at: "classes[0].name")
+        let battlerBefore = try editor3.bytes(at: "battleranimations[0].name")
+        try editor3.setBytes(Data("Mochi".utf8), at: "items[0].name")
+        try editor3.save(to: copy3)
+
+        let reopened3 = try LCFDatabase(contentsOf: copy3)
+        let heroNameAfter = try reopened3.bytes(at: "classes[0].name")
+        let battlerAfter = try reopened3.bytes(at: "battleranimations[0].name")
+        check("L26", "2003 保存后 ldb_id 仍为 2003（classes/battleranimations 未被静默丢弃）",
+              heroNameAfter == heroNameBefore && battlerAfter == battlerBefore
+                && heroNameBefore == Data("Hero A".utf8),
+              "classes: \(heroNameBefore.map(hex) ?? "nil") -> \(heroNameAfter.map(hex) ?? "nil")\n"
+              + "battleranimations: \(battlerBefore.map(hex) ?? "nil") -> \(battlerAfter.map(hex) ?? "nil")")
+
+        let written3 = try reopened3.bytes(at: "items[0].name")
+        let untouched3 = try reopened3.bytes(at: "skills[0].using_message1")
+        check("L27", "2003 写回：改过的字段读回一致、未改的日文字段逐字节不变",
+              written3 == Data("Mochi".utf8) && untouched3 == wantSkill3,
+              "written=\(written3.map(hex) ?? "nil")\nuntouched=\(untouched3.map(hex) ?? "nil")\n"
+              + "want=\(hex(wantSkill3))")
+
         // ---- 错误路径 ----
         var openFailed = false
         do { _ = try LCFDatabase(contentsOf: work.appendingPathComponent("nope.ldb")) } catch LCFError.openFailed { openFailed = true }
