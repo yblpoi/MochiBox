@@ -58,6 +58,12 @@ enum MochiBoxMain {
             // Never 返回：内部起 NSApplication 跑完冒烟后 exit()。
             KernelSmokeMain.bootstrap(arguments)
         }
+        // `--play-native <游戏目录>`：原生运行时（EasyRPG）单进程启动，没有 CDP / 静态服务 /
+        // attach 链路。**必须排在 `--play` 之前**：两个旗标都吃一个目录参数，且都走
+        // `AttachCLI`（`--play` 的精确匹配不会命中 `--play-native`，这里显式分流）。
+        if arguments.contains("--play-native") {
+            AttachCLI.bootstrap(arguments)
+        }
         // v0.2：`--play <游戏目录>` 走真实产品启动路径（静态服务 + 浏览器 + attach）。
         // 放在 `--attach` 之后、`MochiBoxApp.main()` 之前：两者都绝不初始化 NSApplication。
         //

@@ -158,7 +158,12 @@ actor GameLauncher {
         engine: EngineKind? = nil
     ) -> (url: URL, layout: LaunchLayout)? {
         let manager = FileManager.default
-        let allowAppBundles = (engine?.launchBackend ?? .nwjsWeb) == .nwjsWeb
+        // **不要写 `engine?.launchBackend ?? .nwjsWeb`**：`launchBackend` 自身是可选，
+        // `engine?.launchBackend` 因此是 `LaunchBackend??`，`??` 只合并**外层** Optional。
+        // engine 为 nil 时结果是 "内层仍是 nil" 的 `.some(nil)`，再与 `.nwjsWeb` 比较
+        // 得到 false —— 旧写法却让 nil 落进默认值 `.nwjsWeb`，门禁恒为 true（空操作）。
+        // 直接比较 `LaunchBackend?` 与 `LaunchBackend`：nil 时自然为 false（不放行）。
+        let allowAppBundles = (engine?.launchBackend == .nwjsWeb)
 
         // 1) 输入本身是 .app
         if allowAppBundles, gameRoot.pathExtension.lowercased() == "app" {
@@ -183,11 +188,17 @@ actor GameLauncher {
                     return (url, .innerAppBundle)
                 }
             }
-            // 4) <root>/Contents/MacOS/nwjs（输入是 app.nw 之类）
-            let directNW = gameRoot.appendingPathComponent("Contents/MacOS/nwjs")
-            if manager.isExecutableFile(atPath: directNW.path) {
-                return (directNW, .outerAppBundle)
-            }
+        }
+
+        // 4) <root>/Contents/MacOS/nwjs（输入是 app.nw 之类）
+        //
+        // **结构性证据，不受 `allowAppBundles` 限制**（与 `legacyNWJSExecutable` 的文档注释一致）：
+        // 这个名字只可能出现在 nwjs 工程里，不是"根下碰巧有个 .app"。
+        // 早先把它写在上面 `if allowAppBundles` 块内，引擎为 unknown（门禁为 false）
+        // 时连这条也会被跳过 —— 代码与注释相反。
+        let directNW = gameRoot.appendingPathComponent("Contents/MacOS/nwjs")
+        if manager.isExecutableFile(atPath: directNW.path) {
+            return (directNW, .outerAppBundle)
         }
         return nil
     }
@@ -201,17 +212,28 @@ actor GameLauncher {
     ///
     /// "存在但不可执行"与"压根不存在"**分成两个错误码**：前者 `chmod +x` 就能好，
     /// 后者要跑 `Scripts/fetch-easyrpg.sh`（或整包重装），用户照着同一句文案排错会白忙。
-    nonisolated static func resolveEasyRPGStrategy(gameRoot: URL) throws -> LaunchStrategy {
+    /// - Parameter runtimeCandidates: 运行时候选路径（`--selftest` 注入用）。
+    ///   生产调用传 nil → 走上面的内置三段式查找；自测在临时目录造
+    ///   `vendor/runtime/easyrpg-player` 后直接传进来，不依赖开发机 `vendor/` 的真实产物
+    ///   （否则"缺失/不可执行"这两条永远被真实产物抢先命中，测不出来）。
+    nonisolated static func resolveEasyRPGStrategy(
+        gameRoot: URL,
+        runtimeCandidates: [URL]? = nil
+    ) throws -> LaunchStrategy {
         let manager = FileManager.default
         var candidates: [URL] = []
-        candidates.append(
-            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/runtime/easyrpg-player")
-        )
-        if let resource = Bundle.main.resourceURL {
-            candidates.append(resource.appendingPathComponent("runtime/easyrpg-player"))
-        }
-        if let repo = repositoryRoot() {
-            candidates.append(repo.appendingPathComponent("vendor/runtime/easyrpg-player"))
+        if let runtimeCandidates {
+            candidates = runtimeCandidates
+        } else {
+            candidates.append(
+                Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/runtime/easyrpg-player")
+            )
+            if let resource = Bundle.main.resourceURL {
+                candidates.append(resource.appendingPathComponent("runtime/easyrpg-player"))
+            }
+            if let repo = repositoryRoot() {
+                candidates.append(repo.appendingPathComponent("vendor/runtime/easyrpg-player"))
+            }
         }
 
         var tried: [String] = []

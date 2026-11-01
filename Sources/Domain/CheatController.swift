@@ -36,10 +36,13 @@ final class CheatController: ObservableObject {
     @Published private(set) var lastAction: String = ""
     /// 有请求在飞（UI 用来禁用按钮；并发调用时按计数收敛）。
     @Published private(set) var isBusy: Bool = false
-    /// RPC 已接线且引擎是 MV/MZ。
+    /// RPC 已接线，且当前运行时声明支持游戏内 RPC（`RuntimeCapabilities.rpcCheats`）。
     @Published private(set) var isAvailable: Bool = false
 
     private var rpc: AgentRPC?
+    /// 本会话的运行时能力（由 `attach` 时传入）。EasyRPG 是 `.staticTextOnly`：
+    /// 没有修改器也没有全文扫描，UI 与 `perform` 都按这张表前置拒绝。
+    private var capabilities = RuntimeCapabilities()
     private var log: SessionLog?
     private var busyCount: Int = 0
     /// 心跳快照是否在飞：防止上一次 `cheat.snapshot` 还没回来就叠下一次。
@@ -51,10 +54,11 @@ final class CheatController: ObservableObject {
 
     // MARK: - 接线
 
-    func attach(rpc: AgentRPC, engine: EngineKind?, log: SessionLog? = nil) {
+    func attach(rpc: AgentRPC, capabilities: RuntimeCapabilities, log: SessionLog? = nil) {
         self.rpc = rpc
         if let log = log { self.log = log }
-        self.isAvailable = (engine == .mv || engine == .mz)
+        self.capabilities = capabilities
+        self.isAvailable = capabilities.rpcCheats
         self.lastError = nil
         self.lastAction = ""
     }
@@ -175,7 +179,12 @@ final class CheatController: ObservableObject {
     @discardableResult
     func refreshAll() async -> Bool {
         guard isAvailable else {
-            lastError = ErrorInfo(code: .cheatUnavailable, message: "尚未连接游戏（仅 MV/MZ 支持修改器）")
+            // 两种 false 要分开：没 attach（能力表可能仍写着 true）与运行时本身没有 RPC。
+            // 前者说"尚未连接"才可操作，后者写"该运行时无修改器"才是对的。
+            lastError = ErrorInfo(
+                code: .cheatUnavailable,
+                message: capabilities.rpcCheats ? "尚未连接游戏" : "该运行时无修改器"
+            )
             return false
         }
         beginBusy()
@@ -643,6 +652,14 @@ final class CheatController: ObservableObject {
         _ args: [String: JSONValue],
         busy: Bool = true
     ) async -> JSONValue? {
+        // 能力前置拒绝：EasyRPG 的 `send` 是**静默 no-op**（没有页面通道可发），
+        // 不在这里挡的话 `AgentRPC` 要等满默认 5s（`text.scan*` 是 30s）才超时 ——
+        // 面板看起来像卡死，用户会连点。`cheat_unavailable` 是"这个运行时没有"，
+        // 与 `rpc_timeout`（"发了但没回"）必须分开。
+        guard capabilities.rpcCheats else {
+            lastError = ErrorInfo(code: .cheatUnavailable, message: "该运行时无修改器")
+            return nil
+        }
         guard let rpc = rpc else {
             lastError = ErrorInfo(code: .attachFailed, message: "尚未连接游戏")
             return nil

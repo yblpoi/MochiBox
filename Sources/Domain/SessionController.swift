@@ -466,7 +466,13 @@ final class SessionController: ObservableObject {
             try await adapter.send(command)
         }, log: log)
         self.rpc = rpc
-        cheat.attach(rpc: rpc, engine: entry.engine, log: log)
+        // 能力表**由适配器在 attach 时给出**（`AttachInfo.capabilities`），不是按引擎名
+        // 在这里再猜一次：EasyRPG 返回 `.staticTextOnly`，修改器因此前置拒绝而不是等 RPC 超时。
+        cheat.attach(
+            rpc: rpc,
+            capabilities: attachInfo?.capabilities ?? RuntimeCapabilities(),
+            log: log
+        )
 
         let hash = SessionController.gameHash(for: entry)
         let store = FullTextStore(paths: paths, gameHash: hash, log: log)

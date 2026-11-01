@@ -27,6 +27,7 @@ enum ArgumentValidation {
         case attach = "attach"
         case kernelSmoke = "kernel-smoke"
         case play = "play"
+        case playNative = "play-native"
 
         /// 诊断与帮助里显示的名字（GUI 没有模式旗标）。
         var display: String {
@@ -60,6 +61,14 @@ enum ArgumentValidation {
     /// `--play` 共用 `--attach` 的采集参数，外加它自己的目录与关窗开关。
     static let playFlags: Set<String> = attachFlags.union(["--play", "--close-after"])
 
+    /// `--play-native` 不 attach、不采集，只认目录与翻译后端参数。
+    /// **不含 `--control` / `--headless` / `--browser` / `--kernel` / `--out` /
+    /// `--screenshot`**：它们在这条路径上没有实现，接受后静默忽略比报错更糟
+    /// （用户以为截图/控制通道生效了）。
+    static let playNativeFlags: Set<String> = [
+        "--play-native", "--provider", "--endpoint", "--api-key", "--duration"
+    ]
+
     /// `KernelSmokeMain.parse` 只认这两个（诊断入口刻意不共享产品参数面）。
     static let kernelSmokeFlags: Set<String> = ["--kernel-smoke", "--timeout"]
 
@@ -69,11 +78,12 @@ enum ArgumentValidation {
     static let guiFlags: Set<String> = []
 
     /// 所有模式旗标（同一进程出现两个即互斥冲突）。
-    static let modeFlags = ["--selftest", "--attach", "--kernel-smoke", "--play"]
+    static let modeFlags = ["--selftest", "--attach", "--kernel-smoke", "--play", "--play-native"]
 
     /// 全仓所有合法旗标的并集（用于区分"未知"与"放错模式"）。
     static var knownFlags: Set<String> {
-        return selftestFlags.union(attachFlags).union(playFlags).union(kernelSmokeFlags)
+        return selftestFlags.union(attachFlags).union(playFlags)
+            .union(playNativeFlags).union(kernelSmokeFlags)
     }
 
     static func flags(for mode: Mode) -> Set<String> {
@@ -83,6 +93,7 @@ enum ArgumentValidation {
         case .attach: return attachFlags
         case .kernelSmoke: return kernelSmokeFlags
         case .play: return playFlags
+        case .playNative: return playNativeFlags
         }
     }
 
@@ -114,6 +125,8 @@ enum ArgumentValidation {
             mode = .kernelSmoke
         } else if present.first == "--play" {
             mode = .play
+        } else if present.first == "--play-native" {
+            mode = .playNative
         } else {
             mode = .gui
         }
@@ -148,6 +161,7 @@ enum ArgumentValidation {
   MochiBox --selftest [选项]                      运行内置自检（TAP 输出）
   MochiBox --attach <端口> [选项]                  附着到已开调试端口的浏览器
   MochiBox --play <游戏目录> [选项]                走真实产品启动路径（静态服务 + 内核 + attach）
+  MochiBox --play-native <游戏目录> [选项]         原生运行时启动（EasyRPG，无 attach）
   MochiBox --kernel-smoke <游戏目录> [选项]        最小内核诊断（不注入 Agent）
 
 --selftest
@@ -172,6 +186,11 @@ enum ArgumentValidation {
   以上 --attach 的选项全部可用，另有:
   --play <游戏目录>         游戏目录（MV/MZ 的静态站点根或作品根）
   --close-after <秒>       启动成功 N 秒后模拟用户关窗
+
+--play-native
+  --play-native <游戏目录>  用内置 EasyRPG 运行时启动（仅 RPG Maker 2000/2003）
+  --duration <秒>          运行时长（默认 6；到点 SIGTERM→SIGKILL）
+  成功输出 `play: backend=easyrpg pid=<n>`；不打印 `play: http=`，也不 attach。
 
 --kernel-smoke
   --kernel-smoke <游戏目录>  在最小内核上验证自动播放与注入

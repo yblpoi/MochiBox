@@ -26,6 +26,9 @@ enum AttachCLI {
         // ── v0.2 ──
         /// 游戏目录；非 nil 时走 `runPlay`。
         var play: String? = nil
+        /// 原生运行时（EasyRPG）的游戏目录；非 nil 时走 `runPlayNative`。
+        /// 与 `play` 互斥（`ArgumentValidation` 在入口就把两个模式旗标判成冲突）。
+        var playNative: String? = nil
         /// 无图形会话下跑浏览器（`--headless=new --no-sandbox --disable-gpu`）。
         var headless: Bool = false
         /// 浏览器可执行文件（或 `.app`）路径。
@@ -99,6 +102,14 @@ enum AttachCLI {
             options.play = value
             hasMode = true
         }
+        if let nativeIndex = args.firstIndex(of: "--play-native") {
+            guard nativeIndex + 1 < args.count else { return nil }
+            let value = args[nativeIndex + 1]
+            // 与 `--play` 同规则：缺目录时不能把下一个开关当目录。
+            guard !value.hasPrefix("--"), !value.isEmpty else { return nil }
+            options.playNative = value
+            hasMode = true
+        }
         guard hasMode else { return nil }
 
         func value(of flag: String) -> String? {
@@ -147,6 +158,9 @@ enum AttachCLI {
             guard !value.isEmpty, !value.hasPrefix("--") else { return nil }
             options.control = value
         }
+        // 控制通道建在页面 `PageChannel` 上，原生运行时没有 JS 通道：与其接受参数后
+        // 静默忽略（用户以为门禁装上了），不如按参数错误退出 2。
+        if options.playNative != nil, options.control != nil { return nil }
         return options
     }
 
@@ -154,7 +168,8 @@ enum AttachCLI {
         return "用法: MochiBox --attach <port> [--provider passthrough|openai] [--endpoint <url>] [--out <path.jsonl>] [--screenshot <path.png>] [--duration <sec>]\n"
             + "      MochiBox --play <游戏目录> [--provider passthrough|openai] [--endpoint <url>] [--api-key <k>] "
             + "[--out <path.jsonl>] [--screenshot <path.png>] [--duration <sec>] [--headless] [--browser <可执行文件路径>] "
-            + "[--kernel embedded|chromium] [--close-after <秒>] [--control <socket 路径>]（--control 需 MOCHI_E2E=1）"
+            + "[--kernel embedded|chromium] [--close-after <秒>] [--control <socket 路径>]（--control 需 MOCHI_E2E=1）\n"
+            + "      MochiBox --play-native <游戏目录> [--provider passthrough|openai] [--duration <sec>]"
     }
 
     /// `--control` 的门禁（E2E 专用通道）：**没有 `MOCHI_E2E=1` 就 exit 2**。
@@ -207,6 +222,9 @@ enum AttachCLI {
     // MARK: - 入口分流
 
     static func run(_ options: Options) async -> Int32 {
+        if options.playNative != nil {
+            return await runPlayNative(options)
+        }
         if options.play != nil {
             return await runPlay(options)
         }
@@ -617,6 +635,10 @@ enum AttachCLI {
         // `--play <非游戏目录>` 走的是启动阶段而不是 attach 阶段：漏了这条，
         // 退出码会掉回 1、也不打 `error_code:` 行，脚本没法按码分支。
         .launcherNoExecutable,
+        // 原生运行时（EasyRPG）缺失 / 没有执行位：两者都是"补运行时就可能跑"的环境缺口，
+        // 漏了这两条 `--play-native` 会掉回 exit 1 且不打 `error_code:` 行。
+        .runtimeMissing,
+        .runtimeNotExecutable,
         // v0.4 内置内核（架构 v0.4 §5.3，硬约束 #4）：
         // 无 Aqua 会话 / WKWebView 起不来，两者都是"换台干净的有桌面的 Mac 可能就好"的
         // 环境缺口。漏了这两条，`--play` 会掉回 exit 1 且不打 `error_code:` 行。
@@ -868,6 +890,80 @@ enum AttachCLI {
             return 0
         }
         return report(stats, env: env, options: options)
+    }
+
+    // MARK: - `--play-native`（EasyRPG 原生运行时）
+
+    /// 原生运行时是**单进程**：没有 CDP、没有静态服务、没有页面 Agent。
+    ///
+    /// 因此它**不复用** `--play` 的 attach / drain 链路，也不打印 `play: http=`
+    /// （那一行是 kernel/faults 层的硬契约，正则带行尾 `$`，多一个字段就解析失败）。
+    /// 成功时只新增一行 `play: backend=easyrpg pid=<n>`，进程跑满 `--duration` 后
+    /// 走与 `--play` 相同的 SIGTERM→SIGKILL 收敛。
+    static func runPlayNative(_ options: Options) async -> Int32 {
+        guard let directoryArgument = options.playNative, !directoryArgument.isEmpty else { return 2 }
+        let gameRoot = URL(
+            fileURLWithPath: (directoryArgument as NSString).expandingTildeInPath,
+            isDirectory: true
+        )
+        let detection = EngineDetector.detect(gameRoot)
+        print("play: root=\(gameRoot.path) engine=\(detection.engine.rawValue) provider=\(options.provider) duration=\(options.duration)s")
+
+        let launcher = GameLauncher()
+        var environmentCode: ErrorCode?
+        do {
+            // 引擎门：`--play-native` 只服务有原生运行时的引擎。用 `launchBackend` 判定
+            // （不是按引擎名硬编码），新增原生后端时这里自动放行。
+            guard detection.engine.launchBackend == .easyrpg else {
+                throw MochiBoxError(
+                    code: .launcherNoExecutable,
+                    message: "引擎 \(detection.engine.displayName)（\(detection.engine.rawValue)）"
+                        + "没有原生运行时后端（--play-native 只支持 RPG Maker 2000/2003）"
+                )
+            }
+
+            let entry = GameEntry(
+                name: gameRoot.lastPathComponent,
+                path: gameRoot.path,
+                engine: detection.engine,
+                engineConfidence: detection.confidence,
+                engineEvidence: detection.evidence,
+                supportLevel: detection.supportLevel,
+                reason: detection.reason
+            )
+            let handle = try await launcher.launch(entry: entry, gameRoot: gameRoot, log: nil)
+            // **新增行**，不改 `play: http=`；`pid` 是后续 `pgrep` / 取证脚本的唯一凭据。
+            Self.printFlush("play: backend=easyrpg pid=\(handle.pid)")
+
+            // 与 `--play` 一致：跑满 `--duration` 再 terminate（SIGTERM → 3s → SIGKILL）；
+            // 进程自己先退出就提前收敛，不白等。
+            let deadline = Date().addingTimeInterval(options.duration)
+            while Date() < deadline {
+                if await launcher.isRunning(pid: handle.pid) == false {
+                    Self.printFlush("play: backend_exit pid=\(handle.pid) early=1")
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            await launcher.terminate(handle)
+            return 0
+        } catch let error as MochiBoxError {
+            if Self.environmentCodes.contains(error.code) {
+                environmentCode = error.code
+                print("error_code: \(error.code.rawValue)")
+                print("play failed: \(error.message)")
+            } else {
+                print("play failed: \(error)")
+            }
+        } catch {
+            print("play failed: \(error)")
+        }
+
+        if let code = environmentCode {
+            print("play: environment=\(code.rawValue)")
+            return 3
+        }
+        return 1
     }
 }
 

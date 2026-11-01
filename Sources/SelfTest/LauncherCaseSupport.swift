@@ -429,6 +429,93 @@ extension SelfTestRunner {
                 let survivorsC = await waitUntilGone(token: profileDir(portC).path)
                 try expect(survivorsC.isEmpty, "(c) 不得有带该 profile 的残留进程（pid=\(survivorsC)）")
                 try await assertPortReusable(portC, "(c)")
+            },
+            SelfTestCase(group: "F", name: "easyrpg_runtime_executable") { context in
+                // 原生运行时的"找得到"分支：临时目录里造 vendor/runtime/easyrpg-player
+                // 并**只把这一条**作为候选传给解析器。不能依赖开发机 vendor/ 里的真实产物：
+                // 它会让"找到了"永远成立，测不出注入路径是否真的被走通。
+                let root = try directory(context, "f_easyrpg_runtime")
+                let executable = root.appendingPathComponent("vendor/runtime/easyrpg-player")
+                try touch(root, "vendor/runtime/easyrpg-player", contents: "#!/bin/sh\nexit 0\n")
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755], ofItemAtPath: executable.path
+                )
+
+                let strategy = try GameLauncher.resolveEasyRPGStrategy(
+                    gameRoot: root, runtimeCandidates: [executable]
+                )
+                switch strategy {
+                case .nativeRuntime(let url, let engine):
+                    try expectEqual(url.standardizedFileURL.path,
+                                    executable.standardizedFileURL.path, "运行时路径")
+                    try expectEqual(engine, .easyrpg, "引擎")
+                case .nwjsApp(_, _), .webBrowser(_, _):
+                    throw SelfTestFailure(message: "有可执行运行时必须返回 nativeRuntime")
+                }
+            },
+            SelfTestCase(group: "F", name: "easyrpg_runtime_not_executable") { context in
+                // 存在但没有执行位：必须抛 runtime_not_executable（与 runtime_missing 分开，
+                // 前者 chmod +x 就好，后者要跑 fetch-easyrpg.sh）。
+                let root = try directory(context, "f_easyrpg_noexec")
+                let executable = root.appendingPathComponent("vendor/runtime/easyrpg-player")
+                try touch(root, "vendor/runtime/easyrpg-player", contents: "#!/bin/sh\nexit 0\n")
+                // `Data.write` 的默认权限是 0644（无执行位），这里显式写一遍常量以免
+                // 受 umask / 文件系统默认值影响。
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o644], ofItemAtPath: executable.path
+                )
+
+                do {
+                    _ = try GameLauncher.resolveEasyRPGStrategy(
+                        gameRoot: root, runtimeCandidates: [executable]
+                    )
+                    throw SelfTestFailure(message: "没有执行位时必须抛 runtime_not_executable")
+                } catch let error as MochiBoxError {
+                    try expectEqual(error.code, .runtimeNotExecutable, "错误码")
+                    try expect(error.message.contains("runtime_not_executable"),
+                               "文案应带 detail 码，实际：\(error.message)")
+                    try expect(error.message.contains("chmod +x"), "文案应给出修复命令")
+                }
+            },
+            SelfTestCase(group: "F", name: "nwjs_app_gate_requires_nwjs_backend") { context in
+                // 回归：RM2000 目录删掉 RPG_RT.lmt 后引擎是 unknown，目录里的
+                // `EasyRPG Player.app` **不得**被当成 nwjs 启动。旧代码 `engine?.launchBackend
+                // ?? .nwjsWeb` 是双重 Optional，`??` 只合并外层，门禁恒为 true。
+                let root = try directory(context, "f_app_gate")
+                try touch(root, "RPG_RT.ldb", contents: "stub")
+                let app = root.appendingPathComponent("EasyRPG Player.app", isDirectory: true)
+                let fake = app.appendingPathComponent("Contents/MacOS/EasyRPG Player")
+                try touch(app, "Contents/MacOS/EasyRPG Player", contents: "#!/bin/sh\nexit 0\n")
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755], ofItemAtPath: fake.path
+                )
+                try expectEqual(EngineDetector.detect(root).engine, .unknown,
+                                "只有 RPG_RT.ldb（无 lmt）必须识别为 unknown")
+
+                let launcher = GameLauncher(paths: AppPaths(root: try directory(context, "f_app_gate_store")))
+                do {
+                    _ = try await launcher.resolveStrategy(gameRoot: root, engine: .unknown)
+                    throw SelfTestFailure(message: "unknown 引擎不得认领目录里的任意 .app")
+                } catch let error as MochiBoxError {
+                    try expectEqual(error.code, .launcherNoExecutable, "错误码")
+                }
+
+                // 结构性证据：`Contents/MacOS/nwjs` 不受 .app 门禁限制，
+                // 即使引擎是 unknown 也必须返回 nwjsApp（代码与注释一致）。
+                try touch(root, "Contents/MacOS/nwjs", contents: "#!/bin/sh\nexit 0\n")
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755],
+                    ofItemAtPath: root.appendingPathComponent("Contents/MacOS/nwjs").path
+                )
+                let strategy = try await launcher.resolveStrategy(gameRoot: root, engine: .unknown)
+                switch strategy {
+                case .nwjsApp(let executable, let layout):
+                    try expect(executable.path.hasSuffix("Contents/MacOS/nwjs"),
+                               "可执行文件，实际 \(executable.path)")
+                    try expectEqual(layout, .outerAppBundle, "布局")
+                case .webBrowser(_, _), .nativeRuntime(_, _):
+                    throw SelfTestFailure(message: "Contents/MacOS/nwjs 是结构性证据，必须返回 nwjsApp")
+                }
             }
         ]
     }

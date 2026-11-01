@@ -152,9 +152,26 @@ struct MainWindow: View {
         }
     }
 
-    private var isMVMZ: Bool {
-        guard let engine = app.selectedGame?.engine else { return false }
-        return engine == .mv || engine == .mz
+    /// 当前会话的运行时能力（attach 时由适配器写进 `AttachInfo`）。
+    /// 未连接时用默认值（= MV/MZ 的能力）：真正的门是 `isSessionReady`，
+    /// 这里只负责"连上之后哪些页还能操作"。
+    private var runtimeCapabilities: RuntimeCapabilities {
+        return app.session.attachInfo?.capabilities ?? RuntimeCapabilities()
+    }
+
+    /// 修改器与全文扫描是**两条独立的能力**：前者要游戏内 RPC，后者要页面扫描通道。
+    /// 不要再按引擎名硬编码 `engine == .mv || engine == .mz`（EasyRPG 会同时失去两者，
+    /// 但将来若有只缺其一的运行时，硬编码就会说错话）。
+    private var supportsCheats: Bool { runtimeCapabilities.rpcCheats }
+    private var supportsFullText: Bool { runtimeCapabilities.fullTextScan }
+
+    private var capabilityGateText: String {
+        switch (supportsCheats, supportsFullText) {
+        case (false, false): return "该运行时无修改器与全文扫描"
+        case (false, true): return "该运行时无修改器"
+        case (true, false): return "该运行时无全文扫描"
+        case (true, true): return ""
+        }
     }
 
     private var sessionGateReason: String {
@@ -187,8 +204,8 @@ struct MainWindow: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-            } else if !isMVMZ {
-                Text("当前引擎不支持修改器与全文扫描（仅 MV/MZ）")
+            } else if !supportsCheats || !supportsFullText {
+                Text(capabilityGateText)
                     .font(.caption2)
                     .foregroundColor(.orange)
                     .lineLimit(1)
@@ -215,7 +232,7 @@ struct MainWindow: View {
                 FullTextPanel(
                     controller: app.session.fullText,
                     gameRoot: app.selectedGame.map { URL(fileURLWithPath: $0.path) },
-                    engineSupported: isMVMZ
+                    supportsFullText: supportsFullText
                 )
             } else {
                 lockedPane("全文")

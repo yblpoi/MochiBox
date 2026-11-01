@@ -40,8 +40,10 @@ struct FullTextPanel: View {
     @ObservedObject var controller: FullTextController
     /// `app.selectedGame?.path`：只有"导出到游戏目录"会用到。
     let gameRoot: URL?
-    /// 非 MV/MZ 时扫描/翻译/作弊都没有意义（§9 最后一行）。
-    let engineSupported: Bool
+    /// 当前运行时是否支持全文扫描（`RuntimeCapabilities.fullTextScan`）。
+    /// 为 false 时扫描/翻译都没有意义（§9 最后一行）；文案不能再写"仅 MV/MZ" ——
+    /// 能力表才是判据，引擎名不是。
+    let supportsFullText: Bool
 
 
     var body: some View {
@@ -124,8 +126,8 @@ struct FullTextPanel: View {
                     .lineLimit(1)
             }
             Spacer()
-            if !engineSupported {
-                Text("仅支持 MV/MZ")
+            if !supportsFullText {
+                Text("该运行时无全文扫描")
                     .font(.system(size: 10))
                     .foregroundColor(.orange)
             } else if !controller.isAttached {
@@ -548,7 +550,7 @@ struct FullTextPanel: View {
                     .foregroundColor(.secondary)
                     .lineLimit(2)
             } else {
-                Text(canOperate ? "就绪" : (engineSupported ? "连接游戏后可用" : "仅支持 MV/MZ"))
+                Text(canOperate ? "就绪" : (supportsFullText ? "连接游戏后可用" : "该运行时无全文扫描"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -562,7 +564,7 @@ struct FullTextPanel: View {
 
     /// 能发起新任务：已接线 + 引擎支持 + 当前没有在跑的轮次。
     private var canOperate: Bool {
-        return controller.isAttached && engineSupported && !controller.phase.isRunning
+        return controller.isAttached && supportsFullText && !controller.phase.isRunning
     }
 
     private var targetPathText: String {
