@@ -693,9 +693,9 @@ private struct GameRow: View {
                     .foregroundColor(.secondary)
                 // 启动后显示「已启动」而不是一直挂着「可启动」——
                 // 用户要从库里一眼看出"现在跑的是哪一个"。
-                Text(isRunning ? "已启动" : game.supportLevel.uiLabel)
+                Text(isRunning ? "已启动" : game.displaySupportLevel)
                     .font(.system(size: 10))
-                    .foregroundColor(isRunning || game.supportLevel == .p0 ? .green : .secondary)
+                    .foregroundColor(isRunning || game.isLaunchable ? .green : .secondary)
             }
         }
         .padding(.vertical, 2)

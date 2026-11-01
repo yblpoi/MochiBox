@@ -29,6 +29,19 @@ struct GameEntry: Codable, Identifiable, Sendable, Hashable {
         return engine.launchBackend != nil && !missing
     }
 
+    /// 展示口径：`supportLevel` 是入库快照（PRD §A.1 声明级别），不等于"现在能不能启动"。
+    /// easyrpg 声明仍是 p2，但内置运行时已通 —— 不能再用「暂不支持（需 Wine 后端）」。
+    ///
+    /// 这里**不新增** `SupportLevel` case：它是 `String` 枚举且随 `library.json` 落盘，
+    /// 旧版本 App 遇到未知 rawValue 会让 `LibraryStore.load` **整库解码失败**
+    /// （改名备份 + 以空库启动）。派生值只活在内存里，旧库（p2）读进来即正确，无需迁移。
+    var displaySupportLevel: String {
+        if engine.launchBackend != nil && supportLevel == .p2 {
+            return "可启动（内置运行时）"
+        }
+        return supportLevel.uiLabel
+    }
+
     init(
         id: String = UUID().uuidString,
         name: String,

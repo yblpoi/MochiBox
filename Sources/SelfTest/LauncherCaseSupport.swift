@@ -477,6 +477,56 @@ extension SelfTestRunner {
                     try expect(error.message.contains("chmod +x"), "文案应给出修复命令")
                 }
             },
+            SelfTestCase(group: "F", name: "legacy_library_support_display") { context in
+                // 旧版本 App 写出的库：easyrpg 条目仍是 "p2"（当时没有内置运行时）。
+                // 新代码不迁移、不写新枚举值：展示时按 launchBackend 派生，旧 App 仍能读回。
+                let root = try directory(context, "f_legacy_library")
+                let url = root.appendingPathComponent("library.json")
+                let legacy = """
+                {"schemaVersion":1,"games":[{"id":"legacy-easyrpg","name":"旧库游戏","path":"/tmp/legacy-easyrpg","engine":"easyrpg","engineConfidence":"high","engineEvidence":["RPG_RT.ldb","RPG_RT.lmt"],"supportLevel":"p2","reason":null,"addedAt":1700000000000,"lastLaunchedAt":null,"launchCount":7,"missing":true}]}
+                """
+                try Data(legacy.utf8).write(to: url)
+
+                let store = LibraryStore(url: url)
+                let loaded = store.load()
+                try expectEqual(loaded.games.count, 1, "旧库必须能解码")
+                let entry = loaded.games[0]
+                try expectEqual(entry.supportLevel, .p2, "库内声明级别保持 p2（不新增落盘值）")
+                try expectEqual(entry.displaySupportLevel, "可启动（内置运行时）", "easyrpg 展示口径")
+                try expectEqual(entry.addedAt, 1_700_000_000_000, "addedAt 保留")
+                try expectEqual(entry.launchCount, 7, "launchCount 保留")
+                try expectEqual(entry.id, "legacy-easyrpg", "id 保留")
+                try expect(entry.missing, "missing 保留")
+
+                let kirikiri = GameEntry(
+                    id: "k", name: "吉里吉里", path: "/tmp/k", engine: .kirikiri,
+                    engineConfidence: .high, engineEvidence: [], supportLevel: .p2,
+                    reason: nil, addedAt: 1, launchCount: 0, missing: false
+                )
+                try expectEqual(kirikiri.displaySupportLevel, "暂不支持（需 Wine 后端）", "p2 文案不许改")
+                let mv = GameEntry(
+                    id: "m", name: "MV", path: "/tmp/m", engine: .mv,
+                    engineConfidence: .high, engineEvidence: [], supportLevel: .p0,
+                    reason: nil, addedAt: 1, launchCount: 0, missing: false
+                )
+                try expectEqual(mv.displaySupportLevel, "可启动", "p0 文案保持")
+
+                try store.save(LibraryFile(games: loaded.games))
+                let again = store.load()
+                try expectEqual(again.games.first?.supportLevel, .p2, "save 后仍能读回")
+                try expectEqual(again.games.first?.launchCount, 7, "save 后 launchCount 不变")
+
+                // 落盘字节里也不能出现新枚举值：旧 App 读的是同一个 library.json。
+                let saved = try String(contentsOf: url, encoding: .utf8)
+                try expect(saved.contains("\"supportLevel\":\"p2\""), "落盘仍是 p2，实际 \(saved)")
+                try expect(!saved.contains("p2Native"), "不得把派生展示值写进库，实际 \(saved)")
+                try expect(saved.contains("\"addedAt\":1700000000000"), "addedAt 落盘不变")
+                try expect(saved.contains("\"launchCount\":7"), "launchCount 落盘不变")
+                try expect(saved.contains("\"missing\":true"), "missing 落盘不变")
+                if context.verbose {
+                    print("# [F] legacy library after save: \(saved)")
+                }
+            },
             SelfTestCase(group: "F", name: "nwjs_app_gate_requires_nwjs_backend") { context in
                 // 回归：RM2000 目录删掉 RPG_RT.lmt 后引擎是 unknown，目录里的
                 // `EasyRPG Player.app` **不得**被当成 nwjs 启动。旧代码 `engine?.launchBackend

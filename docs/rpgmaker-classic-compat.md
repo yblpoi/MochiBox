@@ -77,7 +77,7 @@
 
 EasyRPG Player 本体依赖太多（SDL2 等），不做静态内链，只能内置独立可执行 + 子进程（§九「独立窗口」风险的来源）。
 
-**2000/2003 的译文载体是 PO，不是改 LDB**：`--language <LANG>` 与 `--save-path <存档目录>` 0.8.1 即有；`--language-path` **只有 master 有**，0.8.1 只读 `<游戏目录>/language/<LANG>/`——"外部语言目录 + 零写盘"要么自编 master，要么把整棵游戏目录复制到自有位置、保持原树形不改任何文件，再用 `--project-path` 指过去（`--save-path` 把存档挪出）；依赖 RTP 的游戏不会因复制而完整。布局 `PATH/<LANG>/meta.ini` + `*.po`，五类：`rpg_rt.ldb.po`、`rpg_rt.ldb.common.po`、`rpg_rt.ldb.battle.po`、`rpg_rt.lmt.po`、`mapNNNN.po`。msgid/msgstr 用**完整原串**（含 `\n[1]`、`\v[1]`），变量在译文后展开，码不能剥。`meta.ini` 必须写在 **`[Language]` section** 下（`translation.cpp:117-125` 写死），键 6 个：`Name`/`Code`/`Term`/`GameTitle`/`Font` 与可选的 `Description`（`Term` 默认 `Language`）、**写错 section 会被静默忽略**。`vendor/liblcf-src/src/inireader.cpp:164-169` 的 `MakeKey` 是 `section+"="+name` 再小写，但只解释机制，不能反推 section。
+**2000/2003 的译文载体是 PO，不是改 LDB**：`--language <LANG>` 与 `--save-path <存档目录>` 0.8.1 即有；`--language-path` **只有 master 有**，0.8.1 只读 `<游戏目录>/language/<LANG>/`——"外部语言目录 + 零写盘"要么自编 master，要么把整棵游戏目录复制到自有位置、保持原树形不改任何文件，再用 `--project-path` 指过去（`--save-path` 把存档挪出）；依赖 RTP 的游戏不会因复制而完整。布局 `PATH/<LANG>/meta.ini` + `*.po`，五类：`rpg_rt.ldb.po`、`rpg_rt.ldb.common.po`、`rpg_rt.ldb.battle.po`、`rpg_rt.lmt.po`、`mapNNNN.po`。msgid/msgstr 用**完整原串**（含 `\n[1]`、`\v[1]`），变量在译文后展开，码不能剥。数据库字段 msgctxt 必须**非索引**（`actors.name`）：0.8.1 只查非索引，`actors.1.name` 全落空。`meta.ini` 必须写在 **`[Language]` section** 下（`translation.cpp:117-125` 写死），键 6 个：`Name`/`Code`/`Term`/`GameTitle`/`Font` 与可选的 `Description`（`Term` 默认 `Language`）、**写错 section 会被静默忽略**。`vendor/liblcf-src/src/inireader.cpp:164-169` 的 `MakeKey` 是 `section+"="+name` 再小写，但只解释机制，不能反推 section。
 
 ## 五、架构决策
 
@@ -109,19 +109,19 @@ shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件�
 
 **不要用 `supportLevel == .p0` 当闸门**：Tyrano 的 `declaredSupportLevel` 是 `.p0`（`EngineModels.swift:80`）但不可启动，照抄 `architecture.md:493` 的公式会把它误判为可启动。
 
-### ADR-3：启动能力与 supportLevel 解耦，迁移只能在 AppState.init 做
+### ADR-3：启动能力与 supportLevel 解耦，展示层派生
 
-`supportLevel` 是**入库快照**而非实时派生：`EngineDetector.swift:94` 只在识别时写入，加载旧 `library.json` 不重跑识别。结果：新装能跑，老库仍显示 p2。
+`supportLevel` 是**入库快照**：`EngineDetector.swift:94` 只在识别时写入，旧库不重跑识别，记 p2。
 
-`schemaVersion` 做迁移是**空操作**：所有保存点都走 `LibraryFile(games:)` 的默认 `init(schemaVersion: 1)`（`LibraryModels.swift:64`；保存点 `SessionController.swift:1081/1107/1122/1150`），下次任何保存都会把版本号写回 1。
+`schemaVersion` 做迁移是**空操作**：所有保存点都走 `LibraryFile(games:)` 的默认 `init(schemaVersion: 1)`（`LibraryModels.swift:64`；保存点 `SessionController.swift:1081/1107/1122/1150`），下次保存写回 1。
 
-唯一钩子：`AppState.init` 的 `self.games = libraryStore.load().games`（`SessionController.swift:1022`）之后，一次性对 `engine ∈ {easyrpg, rgss1/2/3}` 重算 `supportLevel`，**保留** `addedAt` / `launchCount` / `lastLaunchedAt` / `missing`，然后 save。代价与随后的 `refreshMissingFlags`（:1070，本就逐条 `fileExists`）同级。
+`SupportLevel` 是落盘枚举，新增 case 会让旧 App 整库解码失败、空库启动。改用 `GameEntry.displaySupportLevel` 派生：`launchBackend != nil && supportLevel == .p2` →「可启动（内置运行时）」，其余用 `uiLabel`；旧库读入即正确，不写盘。
 
 ### ADR-4：测试契约保持不变，启动能力另立断言
 
 `Tests/e2e/cases/contract/qa_probe.swift` 的 V6-06（easyrpg→p2，:207）、V6-07（rgss3→p2，:210）、V6-17（rgss2→p2，:244）、V6-22（rgss3 大小写→p2，:259）钉的是 PRD §A.1 表。**这 4 条不改**，新增 V6-26+ 只断言 `isLaunchable`。识别契约与启动能力就此解耦。
 
-`--play` 不走 `isLaunchable`：`AttachCLI.swift:633-684` 直接构造 `MVAdapter` 并 launch，且 `play: http=` 是 kernel/faults 层的硬契约（`Tests/e2e/cases/_kernel_kit.mjs:111` 的正则带行尾 `$`）。老引擎无 HTTP 端口 → **不能改这一行**，必须新增 `--play-native` 输出 `launch: backend=...` 并开独立 suite。
+`--play` 不走 `isLaunchable`：`AttachCLI.swift:633-684` 直接构造 `MVAdapter` 并 launch，且 `play: http=` 是 kernel/faults 层的硬契约（`Tests/e2e/cases/_kernel_kit.mjs:111` 的正则带行尾 `$`）。老引擎无 HTTP 端口 → **不能改这一行**，必须新增 `--play-native` 输出 `play: backend=...` 并开独立 suite。
 
 **`--play-native` 不是"多打一行日志"**：`--play` 的退出码语义绑在 `AttachCLI.swift:611-625` 的 `environmentCodes`（环境缺口 → exit 3 + `error_code:` + `play: environment=`）。新模式的 `runtimeMissing` / `runtimeNotExecutable` **必须加进这张表**，否则掉回 exit 1、脚本无法按码分支。现成模板是 `Tests/e2e/cases/faults/07_unknown_engine.mjs:24-35`（空目录 → exit 3 + `launcher_no_executable`）。`launcherNoExecutable` 语义不动，两个新码只用于"引擎已判 easyrpg / rgss，但运行时缺失"。suite 必须新开，不复用 `play: http=` 的 kernel / faults 分层。
 
@@ -194,7 +194,7 @@ shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件�
 |---|---|---|
 | **Phase 1**（当前） | 2000/2003 的 LCF 数据层 | liblcf 零依赖构建 + C shim + Swift 封装 + 真实 LDB 文本提取；**回写只服务"导出整包译制版"，不是会话内通道** |
 | Phase 2 | RGSS 三版的 Marshal 数据层：**XP 先**（OpenXP + 合成 Map002 双 fixture 已齐），VX 紧随（16 个 `.rvdata` 已解，事件合成未做），VX Ace 最后（无样本） | 纯 Swift 解析/写回 + 三版本样本 + 文本路径提取；mkxp-z 构建已通（见 §九） |
-| Phase 3 | 接线 | `launchBackend` 静态表、`LaunchStrategy.nativeRuntime`、适配器构造、`AppState.init` 迁移、六处能力门、`--play-native` |
+| Phase 3 | 接线 | `launchBackend` 静态表、`LaunchStrategy.nativeRuntime`、适配器构造、`displaySupportLevel` 派生、六处能力门、`--play-native` |
 | Phase 4 | 运行时 | 2000/2003 走 EasyRPG + PO 预翻译（0.8.1 只认游戏目录内的 language/：自编 master，或复制数据 + `--project-path`）；**游戏内无实时通道**，文本流只在 MochiBox 侧可见；静态文本接近全覆盖，脚本生成的内容盖不住。RGSS 三版用 mkxp-z + Ruby hook 做实时 |
 
 若要做 2000/2003 的**实时**翻译，需 fork EasyRPG 加 IPC 回调，XL 成本，非刚需不做。
@@ -217,7 +217,7 @@ shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件�
 |---|---|---|---|
 | 1 | `architecture.md:493`：`isLaunchable` = `supportLevel == .p0 && !missing` | `(engine == .mv \|\| .mz) && !missing`（`LibraryModels.swift:27`）。照文档公式，Tyrano（p0 但无适配器）会被误判可启动 | 以 ADR-2 的 `launchBackend` 为准，文档待修订 |
 | 2 | `architecture.md:831` 有 `EngineAdapterRegistry` | `Sources/` 零命中，`SessionController.swift:269` 直接构造 `MVAdapter` | 文档写的是目标态；ADR-2 明确**不补**这个抽象 |
-| 3 | `EngineModels.swift:100` p2 文案「需 Wine 后端」 | 新路线是原生（EasyRPG / mkxp-z），文案失真 | 随 ADR-5 一并改 |
+| 3 | `EngineModels.swift:100` p2 文案「需 Wine 后端」 | 新路线是原生（EasyRPG / mkxp-z），文案失真 | 见 ADR-3 的展示派生 |
 | 4 | 交接口径「仅 MV/MZ 的 5 处硬编码」 | 实为 6 处（多出 `CheatController.swift:178`） | 已并入 ADR-5 表 |
 
 ## 附录 A · 复现方式
