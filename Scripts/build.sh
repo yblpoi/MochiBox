@@ -71,15 +71,23 @@ LCF_FLAGS=()
 if [ -f "$LCF_LIB" ] && [ -f "$LCF_HEADER" ] && [ -d "$LCF_PREFIX/include/lcf" ]; then
   echo "==> lcf: $(ls -lh "$LCF_LIB" | awk '{print $5}') liblcf.a @ $(cat "$ROOT/vendor/liblcf-build/COMMIT" 2>/dev/null || echo '?')"
   mkdir -p "$BUILD/lcf"
-  # -fvisibility=hidden：只导出 lcf_shim.h 里标了 visibility("default") 的 C 函数，
-  # 把 liblcf 的 C++ 符号关在二进制内部。
+  # -fvisibility=hidden 只作用于**这个 .o**：shim 里没标 visibility("default") 的
+  # 符号（包括它自己用的 C++ 辅助函数）不外露，Swift 侧只看得到 lcf_shim.h 里
+  # 声明的那 9 个函数。注意它管不到静态库那一侧 —— liblcf.a 是按上游默认选项编的，
+  # 里面的 lcf:: 符号仍然是 global（应用进程内无人抢注，代价只是 nm 里多几百行）。
   clang++ -std=c++17 -O2 -arch arm64 -mmacosx-version-min=13.0 -fvisibility=hidden \
     -c "$LCF_SHIM" \
     -I "$ROOT/Sources/Adapters/LCF" -I "$LCF_PREFIX/include" \
-    -o "$BUILD/lcf/lcf_shim.o"
+    -o "$BUILD/lcf/lcf_shim.o" \
+    || { echo "error: lcf_shim.cpp 编译失败（产物在就说明这是真错误，不降级）" >&2; exit 1; }
   LCF_FLAGS=(-import-objc-header "$LCF_HEADER" "$BUILD/lcf/lcf_shim.o" "$LCF_LIB" -lc++)
 else
-  echo "==> lcf: vendor/liblcf-build 不存在 —— 经典 RM(2000/2003) 数据层不可用"
+  # 三个条件分开报：早期版本一律说"vendor 不存在"，误导过排查（缺的其实是头文件）。
+  LCF_MISSING=""
+  [ -f "$LCF_LIB" ]               || LCF_MISSING="$LCF_MISSING vendor/liblcf-build/install/lib/liblcf.a"
+  [ -d "$LCF_PREFIX/include/lcf" ] || LCF_MISSING="$LCF_MISSING vendor/liblcf-build/install/include/lcf"
+  [ -f "$LCF_HEADER" ]            || LCF_MISSING="$LCF_MISSING Sources/Adapters/LCF/lcf_shim.h"
+  echo "==> lcf: 缺$LCF_MISSING —— 经典 RM(2000/2003) 数据层不可用"
   echo "          （需要时跑: bash Scripts/build-liblcf.sh；打包流程不依赖它）"
   LCF_FLAGS=(-DMOCHI_NO_LCF)
 fi
