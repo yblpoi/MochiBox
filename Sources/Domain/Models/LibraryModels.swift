@@ -23,9 +23,10 @@ struct GameEntry: Codable, Identifiable, Sendable, Hashable {
     var launchCount: Int
     var missing: Bool
 
-    /// V0.1 只有 MV/MZ 适配器，因此只有这两种引擎可启动。
+    /// 能不能启动由 `EngineKind.launchBackend` 决定，与 `supportLevel`（PRD 声明级别）无关：
+    /// Tyrano 声明是 p0，但没有运行时后端，因此不可启动。
     var isLaunchable: Bool {
-        return (engine == .mv || engine == .mz) && !missing
+        return engine.launchBackend != nil && !missing
     }
 
     init(

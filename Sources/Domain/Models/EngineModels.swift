@@ -11,6 +11,12 @@ import Foundation
 
 // MARK: - 引擎
 
+/// 可用的启动后端。只回答"这个引擎由谁来跑"，不回答"支持到什么程度"。
+enum LaunchBackend: String, Sendable {
+    case nwjsWeb
+    case easyrpg
+}
+
 /// 引擎种类。`priority` 对应 PRD §A.1 的固定优先级（越小越先命中）。
 enum EngineKind: String, Codable, Sendable, CaseIterable {
     case renpy
@@ -80,6 +86,18 @@ enum EngineKind: String, Codable, Sendable, CaseIterable {
         case .rgss1, .rgss2, .rgss3: return "rgss"
         case .easyrpg: return "easyrpg"
         default: return rawValue
+        }
+    }
+
+    /// 静态穷举表：新增引擎时编译器强制回答"能不能启动"。
+    /// 只表达"有没有启动后端"，与 supportLevel（声明级别）解耦。
+    /// rgss1/2/3 暂为 nil —— mkxp-z 运行时在本机 FileSystem::createPathCache
+    /// SIGSEGV（根因未定），接上去会让用户点了启动然后崩。
+    var launchBackend: LaunchBackend? {
+        switch self {
+        case .mv, .mz: return .nwjsWeb
+        case .easyrpg: return .easyrpg
+        default: return nil
         }
     }
 

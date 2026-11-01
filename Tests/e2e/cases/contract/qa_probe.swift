@@ -185,6 +185,17 @@ struct QAProbe {
                     "expected \(engine.rawValue)/\(level.rawValue)/\(reason?.rawValue ?? "nil") actual \(result.engine.rawValue)/\(result.supportLevel.rawValue)/\(result.reason?.rawValue ?? "nil") evidence=\(result.evidence)")
         }
 
+        /// V6-26..28：从识别结果生成真实条目，再断言 isLaunchable。
+        /// 同时钉住识别出的 engine —— 否则识别退化成 unknown 也会"恰好不可启动"而假绿。
+        func expectLaunchable(_ id: String, _ path: URL, _ engine: EngineKind, _ want: Bool) {
+            let result = EngineDetector.detect(path)
+            let entry = EngineDetector.makeEntry(path: path.path, result: result)
+            let ok = result.engine == engine && entry.isLaunchable == want
+            r.check(id, "isLaunchable(\(path.lastPathComponent))",
+                    ok,
+                    "expected \(engine.rawValue) launchable=\(want) actual \(result.engine.rawValue) launchable=\(entry.isLaunchable) supportLevel=\(entry.supportLevel.rawValue) backend=\(entry.engine.launchBackend?.rawValue ?? "nil")")
+        }
+
         // 1 mz
         touch("e_mz/js/rmmz_core.js")
         expect("V6-01", root.appendingPathComponent("e_mz"), .mz, .p0, nil)
@@ -266,6 +277,29 @@ struct QAProbe {
         // 25 tyrano 只有 Config.tjs、没有 tyrano.js / index.html#tyrano → 不算命中
         touch("e_tyrano_partial/data/system/Config.tjs")
         expect("V6-25", root.appendingPathComponent("e_tyrano_partial"), .unknown, .unknown, .noSignatureMatched)
+
+        // ---- V6-26..29 launchBackend：可启动性由后端决定，不由 supportLevel 决定 ----
+        // 26 easyrpg 有运行时后端 → 可启动（声明级别只有 p2，正说明两者解耦）
+        expectLaunchable("V6-26", root.appendingPathComponent("e_easyrpg"), .easyrpg, true)
+        // 27 rgss3 运行时未就绪（mkxp-z SIGSEGV）→ 不可启动
+        expectLaunchable("V6-27", root.appendingPathComponent("e_rgss3"), .rgss3, false)
+        // 28 tyrano 声明 p0，但没有启动后端 → 不可启动
+        expectLaunchable("V6-28", root.appendingPathComponent("e_tyrano"), .tyrano, false)
+        // 29 表穷举：3 个有后端 + 11 个 nil，必须覆盖 EngineKind 全部 case（新增引擎时此条会红）
+        let backed: [(EngineKind, LaunchBackend)] = [(.mv, .nwjsWeb), (.mz, .nwjsWeb), (.easyrpg, .easyrpg)]
+        let backendless: [EngineKind] = [.renpy, .kirikiri, .rgss3, .rgss2, .rgss1, .tyrano, .wolf, .unity, .godot, .siglus, .unknown]
+        var wrong: [String] = []
+        for (kind, want) in backed where kind.launchBackend != want {
+            wrong.append("backed \(kind.rawValue) want=\(want.rawValue) got=\(kind.launchBackend?.rawValue ?? "nil")")
+        }
+        for kind in backendless where kind.launchBackend != nil {
+            wrong.append("backendless \(kind.rawValue) got=\(kind.launchBackend?.rawValue ?? "nil")")
+        }
+        let covered = Set(backed.map { $0.0 } + backendless)
+        let uncovered = EngineKind.allCases.filter { !covered.contains($0) }.map { $0.rawValue }
+        if !uncovered.isEmpty { wrong.append("uncovered=\(uncovered.joined(separator: ","))") }
+        r.check("V6-29", "launchBackend 穷举表", wrong.isEmpty,
+                "wrong=\(wrong) covered=\(covered.count)/\(EngineKind.allCases.count)")
 
         try? FileManager.default.removeItem(at: root)
     }
