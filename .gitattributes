@@ -24,3 +24,9 @@
 *.ogg_ binary
 *.png_ binary
 *.efkefc binary
+
+# RGSS 数据文件：Marshal 二进制，往返断言依赖字节完全不变
+# （git 的 text=auto 一般能识别 NUL，但显式声明才能保证任何检出配置下都不被转换）
+*.rxdata  binary
+*.rvdata  binary
+*.rvdata2 binary

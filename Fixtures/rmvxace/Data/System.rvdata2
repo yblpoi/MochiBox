@@ -1,0 +1,6 @@
+o:RPG::System:@game_titleI"摩奇箱 测试版 VX Ace:ET:@version_idi:@party_members[ii:@currency_unitI"金币;T:@title_nameI"
+Title;T:@battleback_nameI"Grassland;T:@battle_bgmo:RPG::BGM:
+@nameI"Battle1;T:@volumeii:@pitchii:@battle_end_meo;;I"Victory1;T;ii;ii:@saved_counti:@termso:RPG::System::Terms:@basic[I"レベル;TI"レベル;TI"HP;TI"HP;TI"MP;TI"MP;TI"TP;TI"TP;T:@params[I"攻撃力;TI"防御力;TI"魔法力;TI"魔法防御;TI"敏捷性;TI"運;T:@etypes[I"物理;TI"炎;TI"氷;TI"雷;TI"水;TI"土;TI"風;TI"光;TI"闇;T:@stypes[I"特技;TI"魔法;T:@wtypes[
+I"剣;TI"斧;TI"槍;TI"弓;TI"杖;T:@atypes[	I"盾;TI"兜;TI"鎧;TI"装飾品;T:@commands{I"
+fight;TI"戦う;TI"escape;TI"逃げる;TI"attack;TI"攻撃;TI"
+guard;TI"防御;TI"	item;TI"アイテム;TI"special;TI"スペシャル;T:@messages{I"level_up;TI"#はレベルアップした！;TI"actor_damaged;TI"#はダメージを受けた！;T
