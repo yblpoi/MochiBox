@@ -47,6 +47,8 @@ const LOCK = path.join(ROOT, 'vendor/.liblcf-build.lock');
  * Scripts/build-liblcf.sh 重建时会 rm -rf vendor/liblcf-build，这期间 liblcf.a 不在。
  * 不等就会把"别人正在重编"报成"依赖不齐"—— 我实际撞到过一次，那种假失败会误导人。
  * 锁是 mkdir 做的目录（macOS 没有 flock），构建脚本退出时会删掉它。
+ * 注意：锁只对**最新版** Scripts/build-liblcf.sh 生效 —— 旧版脚本不建锁也不等待，
+ * 手上有旧副本的人照样能踩到别人。所以下面还有一层"编译失败时重试一次"兜底。
  */
 function waitWhileRebuilding(tap, maxSeconds = 120) {
   const lock = LOCK;
