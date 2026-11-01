@@ -38,7 +38,7 @@
 //   L24 打开不存在的文件抛 openFailed
 //   L25 打开非 LCF 文件抛 parseFailed
 //   L36 版本判据是 ldb_id：ldb_id=2003 且 classes 清空后仍报 2003（synthetic）
-//   L37 同一个库的顶层 chunk 里没有 0x1E/0x1F —— 按 chunk 判会误判成 2000（synthetic）
+//   L37 classes 清空后 2k3 chunk 依然写出 —— chunk 存在只反映编码方式，不反映有无数据
 //   L38 ldb_id=0 时塞进 classes/battleranimations → Save 返回 true 但回读为 0（synthetic）
 //   L39 同一个库的顶层 chunk 里也没有 0x1D/0x1E/0x1F —— 静默丢弃，不报错（synthetic）
 //   L40 chunk 扫描器自检：rm2000 的顶层 chunk 集合与 liblcf 已知布局一致
@@ -402,10 +402,15 @@ struct LCFProbe {
         check("L36", "ldb_id=2003 且 classes 清空后仍报 2003", emptied.rmVersion() == .rm2003,
               "version=\(emptied.rmVersion()) classPaths=\(synthClassPaths(emptied).count)")
 
+        // 这里把结论钉反方向：liblcf 的 writer 是**按 ldb_id 决定写不写 2k3 chunk**，
+        // 与数组是否为空无关 —— 清空 classes 之后 0x1D/0x1E/0x1F 照样出现。
+        // 所以"chunk 出现"只能说明**写这个文件的人按 2003 编码**，不能说明里面真有
+        // 2003 数据；反过来"chunk 不出现"则多半是 2000 写的。判版本仍然只认 ldb_id。
         let emptiedChunks = try topLevelChunkIDs(synthEmpty2k3)
-        check("L37", "同一个库的顶层 chunk 里没有 0x1E/0x1F（按 chunk 判会误判成 2000）",
-              !emptiedChunks.contains(0x1E) && !emptiedChunks.contains(0x1F),
-              "chunks=\(emptiedChunks.map { String(format: "0x%02X", $0) })")
+        check("L37", "classes 清空后 2k3 chunk 依然写出（chunk 存在只反映编码方式，不反映有无数据）",
+              emptiedChunks.contains(0x1D) && emptiedChunks.contains(0x1E) && emptiedChunks.contains(0x1F)
+                && synthClassPaths(emptied).isEmpty,
+              "chunks=\(emptiedChunks.map { String(format: "0x%02X", $0) }) classPaths=\(synthClassPaths(emptied).count)")
 
         let injected = try LCFDatabase(contentsOf: synth2kWithClasses)
         check("L38", "ldb_id=0 时塞进 classes/battleranimations，Save 成功但回读为 0",
@@ -419,8 +424,10 @@ struct LCFProbe {
 
         // 扫描器自检：这一段要是错的，L37/L39 的"不存在"就毫无意义。
         let baseChunks = try topLevelChunkIDs(rm2000)
+        // rm2000 是 RPG_RT 时代写的真文件：顶层只有 0x0B..0x1A（末位 0x1A 是 version），
+        // 没有任何 2k3 chunk —— 这正是"按 chunk 判 2000"能成立的场景。
         let expectedChunks: Set<Int> = [0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
-                                        0x15, 0x16, 0x17, 0x18, 0x19]
+                                        0x15, 0x16, 0x17, 0x18, 0x19, 0x1A]
         check("L40", "chunk 扫描器自检：rm2000 的顶层 chunk 集合与已知布局一致",
               Set(baseChunks) == expectedChunks,
               "got=\(baseChunks.map { String(format: "0x%02X", $0) })")
