@@ -74,6 +74,8 @@ enum AppBundleLocator {
 enum LaunchStrategy: Sendable {
     case nwjsApp(executable: URL, layout: LaunchLayout)
     case webBrowser(webRoot: URL, engine: EngineKind)
+    /// 原生运行时（EasyRPG Player）：自己就是一个进程，没有调试端口、没有静态服务。
+    case nativeRuntime(executable: URL, engine: EngineKind)
 }
 
 // MARK: - 启动器
@@ -105,12 +107,22 @@ actor GameLauncher {
 
     // MARK: - 策略解析（纯磁盘，不启动任何东西）
 
-    /// 1) macOS nwjs 布局 → 2) Web 运行后端 → 3) 报错（区分两种失败语义）。
+    /// 0) 原生运行时后端（EasyRPG）→ 1) macOS nwjs 布局 → 2) Web 运行后端 → 3) 报错。
+    ///
+    /// **第 0 优先必须排在 nwjs 规则之前**：RM2000/2003 的发行目录里经常带着
+    /// `EasyRPG Player.app`，落到"根下任意 *.app"那条规则就会被当成 nwjs 启动。
     func resolveStrategy(gameRoot: URL, engine: EngineKind) throws -> LaunchStrategy {
         let root = EngineDetector.normalizedScanRoot(gameRoot)
 
+        switch engine.launchBackend {
+        case .easyrpg:
+            return try GameLauncher.resolveEasyRPGStrategy(gameRoot: root)
+        case .nwjsWeb, .none:
+            break
+        }
+
         // ── 第 1 优先：v0.1 的 4 条 nwjs 规则，一行不改 ──
-        if let hit = GameLauncher.legacyNWJSExecutable(gameRoot: root) {
+        if let hit = GameLauncher.legacyNWJSExecutable(gameRoot: root, engine: engine) {
             return .nwjsApp(executable: hit.url, layout: hit.layout)
         }
 
@@ -135,11 +147,21 @@ actor GameLauncher {
     /// v0.1 的 `resolveExecutable` 函数体：只把最终 `throw` 换成 `return nil`。
     ///
     /// **不要重写这段逻辑** —— 它的 `CFBundleExecutable` 兜底规则被 4 种布局依赖。
-    nonisolated static func legacyNWJSExecutable(gameRoot: URL) -> (url: URL, layout: LaunchLayout)? {
+    ///
+    /// 两条"任意 .app 都算 nwjs"的规则（输入本身是 .app / 根下任意 *.app）只在
+    /// `engine.launchBackend == .nwjsWeb` 时生效：EasyRPG 游戏的目录里带
+    /// `EasyRPG Player.app`、RGSS 游戏的目录里带 `Game.app` 都是常态，
+    /// 无条件认领会把它们误判成 nwjs 启动（随后 CDP 探测必然失败）。
+    /// 反过来 `nwjs.app/` 与 `Contents/MacOS/nwjs` 两条是**结构性证据**，不受此限。
+    nonisolated static func legacyNWJSExecutable(
+        gameRoot: URL,
+        engine: EngineKind? = nil
+    ) -> (url: URL, layout: LaunchLayout)? {
         let manager = FileManager.default
+        let allowAppBundles = (engine?.launchBackend ?? .nwjsWeb) == .nwjsWeb
 
         // 1) 输入本身是 .app
-        if gameRoot.pathExtension.lowercased() == "app" {
+        if allowAppBundles, gameRoot.pathExtension.lowercased() == "app" {
             if let url = AppBundleLocator.executableInside(appURL: gameRoot) {
                 return (url, .outerAppBundle)
             }
@@ -153,8 +175,8 @@ actor GameLauncher {
             }
         }
 
-        // 3) 根下任意 *.app
-        if let items = try? manager.contentsOfDirectory(atPath: gameRoot.path) {
+        // 3) 根下任意 *.app（仅 nwjs 后端：其它引擎的同名 .app 不是 nwjs）
+        if allowAppBundles, let items = try? manager.contentsOfDirectory(atPath: gameRoot.path) {
             for item in items.sorted() where item.lowercased().hasSuffix(".app") {
                 let appURL = gameRoot.appendingPathComponent(item)
                 if let url = AppBundleLocator.executableInside(appURL: appURL) {
@@ -166,6 +188,73 @@ actor GameLauncher {
             if manager.isExecutableFile(atPath: directNW.path) {
                 return (directNW, .outerAppBundle)
             }
+        }
+        return nil
+    }
+
+    // MARK: - 原生运行时查找（EasyRPG Player）
+
+    /// EasyRPG Player 的三段式查找，顺序照 `MediaRenditions` 解析 ffmpeg 的那一套：
+    ///  1. `Bundle.main.bundleURL/Contents/Resources/runtime/easyrpg-player`（打包产物）
+    ///  2. `Bundle.main.resourceURL/runtime/easyrpg-player`（同一个位置的另一种取法）
+    ///  3. `<repo>/vendor/runtime/easyrpg-player`（开发期，`Scripts/fetch-easyrpg.sh` 的产物）
+    ///
+    /// "存在但不可执行"与"压根不存在"**分成两个错误码**：前者 `chmod +x` 就能好，
+    /// 后者要跑 `Scripts/fetch-easyrpg.sh`（或整包重装），用户照着同一句文案排错会白忙。
+    nonisolated static func resolveEasyRPGStrategy(gameRoot: URL) throws -> LaunchStrategy {
+        let manager = FileManager.default
+        var candidates: [URL] = []
+        candidates.append(
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/runtime/easyrpg-player")
+        )
+        if let resource = Bundle.main.resourceURL {
+            candidates.append(resource.appendingPathComponent("runtime/easyrpg-player"))
+        }
+        if let repo = repositoryRoot() {
+            candidates.append(repo.appendingPathComponent("vendor/runtime/easyrpg-player"))
+        }
+
+        var tried: [String] = []
+        var notExecutable: [String] = []
+        for candidate in candidates {
+            tried.append(candidate.path)
+            guard manager.fileExists(atPath: candidate.path) else { continue }
+            if manager.isExecutableFile(atPath: candidate.path) {
+                return .nativeRuntime(executable: candidate, engine: .easyrpg)
+            }
+            notExecutable.append(candidate.path)
+        }
+
+        if !notExecutable.isEmpty {
+            throw MochiBoxError(
+                code: .runtimeNotExecutable,
+                message: "内置 EasyRPG 运行时没有执行权限（detail: runtime_not_executable）。路径："
+                    + notExecutable.joined(separator: " | ")
+                    + "（chmod +x 即可）"
+            )
+        }
+        throw MochiBoxError(
+            code: .runtimeMissing,
+            message: "找不到内置 EasyRPG 运行时（detail: runtime_missing）。已尝试："
+                + tried.joined(separator: " | ")
+                + "。修复：bash Scripts/fetch-easyrpg.sh 后重新构建"
+        )
+    }
+
+    /// 开发期定位仓库根：从 `#filePath` 逐级往上找含 `Scripts/build.sh` 的目录。
+    ///
+    /// 打包后的 .app 里 `#filePath` 指向编译机上的源码路径（用户机器上通常不存在），
+    /// 于是返回 nil —— 只影响开发期兜底那条候选，bundle 内的两条照旧。
+    nonisolated static func repositoryRoot() -> URL? {
+        let manager = FileManager.default
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<10 {
+            if manager.fileExists(atPath: dir.appendingPathComponent("Scripts/build.sh").path) {
+                return dir
+            }
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { return nil }
+            dir = parent
         }
         return nil
     }
@@ -310,6 +399,13 @@ actor GameLauncher {
         switch try resolveStrategy(gameRoot: gameRoot, engine: entry.engine) {
         case .nwjsApp(let executable, let layout):
             return try launchNWJS(executable: executable, layout: layout, gameRoot: gameRoot, log: log)
+        case .nativeRuntime(let executable, let engine):
+            return try launchNativeRuntime(
+                executable: executable,
+                engine: engine,
+                gameRoot: gameRoot,
+                log: log
+            )
         case .webBrowser(let webRoot, let engine):
             // 内核选择（v0.4 §4.4）：`--headless` / 显式 `--browser` 永远走 Chromium，
             // 其余走应用内 WKWebView。`options.kernel` 显式给了就听它的。
@@ -400,6 +496,92 @@ actor GameLauncher {
             web: nil
         )
         log?.info("GameLauncher", "游戏进程已启动", ["pid": "\(handle.pid)", "port": "\(port)"])
+        return handle
+    }
+
+    /// 原生运行时启动（EasyRPG Player）：单进程，没有调试端口、没有静态服务、没有 CDP。
+    ///
+    /// 参数只给 0.8.1 **确实有**的开关：
+    ///   · `--project-path`：游戏目录（含 RPG_RT.ldb 的那一层）；
+    ///   · `--language`：Player 自身的界面语言；
+    ///   · `--save-path`：存档目录按 gameHash 隔离（同名游戏放不同目录不能串档）；
+    ///   · `--no-audio`：本产品只做文本翻译，音频不参与链路，静音启动最稳。
+    ///
+    /// **不传 `--language-path`**：那是 gettext 的 PO 目录（运行时翻译的正规入口），
+    /// 但官方 **0.8.1 没有这个开关**（只有 master 有），传了会被当成未知参数。
+    /// 所以 2000/2003 的译文只能走静态路径（L1 预翻译），没有实时注入通道。
+    private func launchNativeRuntime(
+        executable: URL,
+        engine: EngineKind,
+        gameRoot: URL,
+        log: SessionLog?
+    ) throws -> LaunchHandle {
+        paths.ensureDirectories()
+
+        // 存档隔离：`sha256(canonicalPath)` 前 16 hex，与 Web 后端的 gameHash 同源同算法
+        // （同一款游戏无论走哪个后端，目录名一致，用户不会看到两份存档目录）。
+        let gameHash = WebPortAssignments.gameHash(for: gameRoot)
+        let saveRoot = paths.root
+            .appendingPathComponent("saves", isDirectory: true)
+            .appendingPathComponent(gameHash, isDirectory: true)
+        // 建不出来不算致命：EasyRPG 自己会 create_path，失败时退回它自己的默认位置。
+        try? FileManager.default.createDirectory(at: saveRoot, withIntermediateDirectories: true)
+
+        let logURL = paths.logsDirectory
+            .appendingPathComponent("easyrpg-\(Timestamp.fileStamp())-\(gameHash.prefix(8)).log")
+        let arguments = [
+            "--project-path", gameRoot.path,
+            "--language", "zh_CN",
+            "--save-path", saveRoot.path,
+            "--no-audio"
+        ]
+
+        log?.info("GameLauncher", "启动原生运行时", [
+            "exe": executable.path,
+            "engine": engine.rawValue,
+            "args": arguments.joined(separator: " "),
+            "cwd": gameRoot.path,
+            "gameHash": gameHash
+        ])
+
+        let process: Process
+        do {
+            process = try ChildProcessLauncher.launch(
+                executable: executable,
+                arguments: arguments,
+                workingDirectory: gameRoot,
+                logURL: logURL
+            ).process
+        } catch {
+            throw MochiBoxError(
+                code: .runtimeNotExecutable,
+                message: "内置 EasyRPG 运行时启动失败：\(error.localizedDescription)",
+                underlying: "\(error)"
+            )
+        }
+
+        running[process.processIdentifier] = process
+        ChildProcessRegistry.shared.register(process.processIdentifier)
+        // `port: 0`：没有调试端口。`terminate` 只会判 `.embeddedKernel` / `.webBrowser`
+        // 两个分支，新 transport 会落到通用 pid 分支 —— 这正是我们要的。
+        let handle = LaunchHandle(
+            pid: process.processIdentifier,
+            port: 0,
+            executableURL: executable,
+            arguments: arguments,
+            gameRoot: gameRoot,
+            logURL: logURL,
+            startedAt: Date(),
+            transport: .nativeRuntime,
+            web: nil,
+            embedded: nil,
+            closed: nil
+        )
+        log?.info("GameLauncher", "原生运行时已启动", [
+            "pid": "\(handle.pid)",
+            "engine": engine.rawValue,
+            "save": saveRoot.path
+        ])
         return handle
     }
 

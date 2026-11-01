@@ -207,6 +207,33 @@ else
   echo "          （需要时跑: bash Scripts/build-ffmpeg.sh；打包流程不依赖它）"
 fi
 
+# ---------------------------------------------------------------------------
+# Step 2.6 -- 内置游戏运行时（Scripts/fetch-easyrpg.sh 的产物）
+#
+# RPG Maker 2000/2003 的启动后端是 EasyRPG Player 进程。与 Step 2.5 的 ffmpeg 同一口径：
+# **可选**。没有它照常出包，只是经典 RM 点了启动会报 runtime_missing（文案里带修复命令）。
+# 许可: EasyRPG Player 是 GPL-3.0+。这里只随包分发**未修改**的上游二进制、
+#       不做静态链接，源码获取地址随上游发布页（easyrpg.org）。
+#
+# 为什么复制后要重新签名: 二进制是从上游 .app 里抽出来的，原签名与落位不再对应，
+#       而外层 `codesign --deep` 只在它认得 bundle 结构时才可靠 —— 先单独 ad-hoc 签，
+#       免得用户看到"签名损坏"。
+# ---------------------------------------------------------------------------
+RUNTIME_SRC="$ROOT/vendor/runtime/easyrpg-player"
+RUNTIME_DST="$APP/Contents/Resources/runtime"
+if [ -x "$RUNTIME_SRC" ]; then
+  echo "==> bundle game runtime ($(du -h "$RUNTIME_SRC" | cut -f1))"
+  mkdir -p "$RUNTIME_DST"
+  cp "$RUNTIME_SRC" "$RUNTIME_DST/easyrpg-player"
+  chmod +x "$RUNTIME_DST/easyrpg-player"
+  codesign -s - --force "$RUNTIME_DST/easyrpg-player" 2>/dev/null \
+    || echo "warn: runtime ad-hoc sign failed (artifact is still runnable locally)"
+  echo "==> runtime: $RUNTIME_DST/easyrpg-player"
+else
+  echo "==> runtime: vendor/runtime/easyrpg-player 不存在 —— RPG Maker 2000/2003 不可启动"
+  echo "          （需要时跑: bash Scripts/fetch-easyrpg.sh；打包流程不依赖它）"
+fi
+
 echo "==> ad-hoc sign"
 if codesign -s - --force --deep "$APP" 2>/dev/null; then
   echo "==> signed (ad-hoc)"

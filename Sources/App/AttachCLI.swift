@@ -719,6 +719,13 @@ enum AttachCLI {
                 await launcher.terminate(handle)
                 print("play failed: 启动句柄不是 Web 运行后端（transport=\(handle.transport.rawValue)）")
                 return 1
+            case .nativeRuntime:
+                // 原生运行时（EasyRPG Player）没有 CDP / 页面通道，`--play` 的 attach 链路
+                // （MVAdapter + 场景探针）对它无意义。这里**明确拒绝**而不是硬着头皮往下走：
+                // 静默继续只会在 attach 阶段炸出一串和真实原因无关的 CDP 超时。
+                await launcher.terminate(handle)
+                print("play failed: 原生运行时后端暂不支持 --play 的 attach 链路（transport=\(handle.transport.rawValue)）")
+                return 1
             }
 
             // 2) `--close-after`：替用户按下关闭按钮（欠账 D4 / 矩阵 E12）。

@@ -145,6 +145,8 @@ extension SelfTestRunner {
                                "可执行文件，实际 \(executable.path)")
                 case .webBrowser:
                     throw SelfTestFailure(message: "存在 nwjs 布局时必须优先 nwjs，不得走 Web 运行后端")
+                case .nativeRuntime:
+                    throw SelfTestFailure(message: "MZ 游戏不得解析成原生运行时")
                 }
 
                 // 只有 web 根（Windows 发行版形态）→ 必须走 webBrowser，且不能因为存在
@@ -165,6 +167,8 @@ extension SelfTestRunner {
                                "不得删除用户的 Game.exe")
                 case .nwjsApp:
                     throw SelfTestFailure(message: "没有 nwjs 时不得返回 nwjs 策略")
+                case .nativeRuntime:
+                    throw SelfTestFailure(message: "MZ 游戏不得解析成原生运行时")
                 }
             },
             SelfTestCase(group: "F", name: "browser_launch_and_terminate", skip: browserCaseSkipReason) { context in

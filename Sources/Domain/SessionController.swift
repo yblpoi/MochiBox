@@ -133,7 +133,9 @@ final class SessionController: ObservableObject {
     /// 全文翻译走 `TranslationPipeline.resolve` → `settings().agentEnabled`）。
     let settingsBox: SettingsBox
     private var settings: Settings
-    private var adapter: MVAdapter?
+    /// 会话适配器。多个引擎共用同一套生命周期（launch / attach / pump / send / stop），
+    /// 差异全在 EngineAdapter 的实现里 —— 所以这里存**协议**类型，不存具体类。
+    private var adapter: (any EngineAdapter)?
     private var pipeline: TranslationPipeline?
     private var currentEntry: GameEntry?
 
@@ -271,7 +273,23 @@ final class SessionController: ObservableObject {
 
         await makePipeline()
 
-        let adapter = MVAdapter(engine: entry.engine, log: log)
+        // 适配器工厂：按**启动后端**选实现（不是按引擎名硬编码）。
+        // launchBackend == nil 的引擎根本走不到这里（上面的 isLaunchable 已经拦住），
+        // 但兜底仍是明确的 fail，**不静默降级**成某个能跑的适配器 —— 那会让用户
+        // 在"看起来连上了"的界面里对着一个没有画面的会话发呆。
+        let adapter: any EngineAdapter
+        switch entry.engine.launchBackend {
+        case .nwjsWeb:
+            adapter = MVAdapter(engine: entry.engine, log: log)
+        case .easyrpg:
+            adapter = EasyRPGAdapter(engine: entry.engine, log: log)
+        case .none:
+            fail(MochiBoxError(
+                code: .launcherNoExecutable,
+                message: "引擎 \(entry.engine.displayName) 没有启动后端"
+            ))
+            return
+        }
         self.adapter = adapter
 
         do {

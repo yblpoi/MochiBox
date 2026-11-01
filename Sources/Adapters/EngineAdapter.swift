@@ -20,6 +20,8 @@ enum LaunchLayout: String, Sendable {
     /// 与 `LaunchTransport` 语义重叠但**不合并**：`LaunchLayout` 进日志与 `AdapterProbe`
     /// （探测阶段不启动进程、也编不出 transport）；`LaunchTransport` 只用于 `terminate` 分流。
     case webBrowser
+    /// 原生运行时（EasyRPG Player）：既不是 nwjs 也不是浏览器壳。
+    case nativeRuntime
     case unknown
 }
 
@@ -31,6 +33,8 @@ enum LaunchTransport: String, Sendable {
     case webBrowser
     /// v0.4：应用内 `WKWebView` 窗口 + HTTP 监听（**没有浏览器进程**：`pid` 恒为 0）。
     case embeddedKernel
+    /// 原生运行时（EasyRPG Player）：单进程 + pid，收进程即收全部资源。
+    case nativeRuntime
 }
 
 /// 内核选择（v0.4）。`nil` = 自动：headless 或显式 `--browser` → Chromium，否则内置内核。
@@ -108,6 +112,30 @@ struct LaunchOptions: Sendable {
     var requiresSceneProbe: Bool = false
 }
 
+/// 本会话的运行时能力自我描述（诚实表，不做猜测）。
+///
+/// 为什么要它：MV/MZ 与 EasyRPG 的能力差异是**结构性的**（前者有 JS 页面可注入，
+/// 后者只有一条本地进程），调用方（UI / CLI / 全文翻译）必须能问"能做哪几件事"，
+/// 而不是按引擎名硬编码 if。默认值 = MV/MZ 的能力：既有 `AttachInfo(...)` 构造点零改动。
+struct RuntimeCapabilities: Sendable, Equatable {
+    /// 游戏内 RPC（v0.6 修改器 / E2E 控制通道）。
+    var rpcCheats: Bool = true
+    /// 全文扫描（一次性把整本游戏文本取出来翻译）。
+    var fullTextScan: Bool = true
+    /// 页面 JS 注入（Agent 装 hook，实时链路的前提）。
+    var jsInjection: Bool = true
+    /// 离线扫描（只读磁盘上的游戏数据，不需要运行时活着）。
+    var offlineScan: Bool = false
+
+    /// EasyRPG Player：没有 JS 可注入，只有磁盘上的 LDB/LMT 可读。
+    static let staticTextOnly = RuntimeCapabilities(
+        rpcCheats: false,
+        fullTextScan: false,
+        jsInjection: false,
+        offlineScan: true
+    )
+}
+
 struct AttachInfo: Sendable {
     var pageURL: String
     var browserVersion: String?
@@ -115,6 +143,8 @@ struct AttachInfo: Sendable {
     var hooks: [String]
     var usedFlatten: Bool
     var allowOriginsRetryUsed: Bool
+    /// 带默认值：所有既有构造点（MV/MZ）保持原样。
+    var capabilities: RuntimeCapabilities = RuntimeCapabilities()
 }
 
 enum AdapterState: Sendable {

@@ -65,6 +65,14 @@ enum ErrorCode: String, Codable, Sendable {
     case cheatUnavailable = "cheat_unavailable"
     /// id 越界（数据表长度 / 事件 id / actor id）。
     case cheatOutOfRange = "cheat_out_of_range"
+    // ── 原生运行时（EasyRPG Player，RPG Maker 2000/2003）──
+    /// 找不到内置运行时（候选路径全部落空）。
+    ///
+    /// 与 `launcherNoExecutable` 的区别是**缺的是谁**：那个是"用户目录里没有游戏可执行文件"，
+    /// 这个是"我们自己的分发包不完整"。混成一个码会让用户去翻游戏目录排错。
+    case runtimeMissing = "runtime_missing"
+    /// 找到了运行时文件但没有执行位（`chmod +x` 就能好），或 exec 直接失败（架构不匹配）。
+    case runtimeNotExecutable = "runtime_not_executable"
     /// 参数非法（Host 与 Agent 都会抛：缺字段、类型不对、枚举不认识）。
     case cheatBadArgs = "cheat_bad_args"
     /// 路径/写入目标被安全边界拒绝（`cheat.setObjectPath`）。
@@ -105,6 +113,11 @@ enum ErrorCode: String, Codable, Sendable {
             return (false, "Agent 协议版本不兼容")
         case .launcherNoExecutable:
             return (false, "找不到可执行文件")
+        // 分发包自身的问题：重试一定同样失败，出路是重新取运行时 / chmod。
+        case .runtimeMissing:
+            return (false, "找不到内置游戏运行时（分发包可能不完整）")
+        case .runtimeNotExecutable:
+            return (false, "内置游戏运行时不可执行（文件损坏或缺少执行权限）")
         case .cdpTimeout:
             return (false, "等待调试端口超时")
         case .agentNoHello:
