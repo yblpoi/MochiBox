@@ -202,10 +202,18 @@ struct LCFProbe {
         let longZh = Data("这是简体中文的测试文本。".utf8)
         check("L16", "UTF-8 中文长句判成 UTF-8", LCFTextCodec.detect(longZh) == .utf8,
               "got=\(LCFTextCodec.detect(longZh).rawValue)")
+        // 对抗样本：D2 A9 CB AE 同时是合法 UTF-8（解出西里尔「ҩˮ」）与合法 GB18030（解出「药水」）。
+        // 所以"UTF-8 优先"不能只看能不能解开，还要看解出来的是不是 CJK —— 这条专门钉这个。
+        //
+        // 覆盖范围说明：**仓库里没有真实的中文汉化 .ldb 样本**（可分发来源里只有日文原版
+        // EasyRPG/TestGame），GBK 判据目前只在合成字节上验证。要补真实样本，得先拿到
+        // GPL 兼容的汉化工程；在那之前这里只能标"合成覆盖"，不能算作真机验证。
         let gbk = try LCFTextCodec.encode("药水", as: .gb18030)
         let gbkDetected = LCFTextCodec.detect(gbk)
         let gbkDecoded = try LCFTextCodec.decode(gbk)
-        check("L17", "GBK 的「药水」判成 GB18030 并解回原文",
+        // note() 会被 tap.absorbTap 吞掉（只在失败时透出），所以覆盖范围写进**断言名**里：
+        // 每次跑测试都能在 TAP 行上看见"仅合成样本"，不会被误读成已覆盖汉化版。
+        check("L17", "GBK 的「药水」判成 GB18030（对抗样本；仅合成覆盖，仓库无汉化 .ldb）",
               gbkDetected == .gb18030 && gbkDecoded.text == "药水",
               "bytes=\(hex(gbk)) encoding=\(gbkDetected.rawValue) text=\(gbkDecoded.text)")
         let ascii = Data("Potion".utf8)
