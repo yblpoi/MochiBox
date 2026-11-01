@@ -116,6 +116,9 @@ RGSS 的路径是 Ruby 数据结构的直接投影；统一成 LCF 风格会丢�
 ## 7. 测试与 fixture
 
 - 用例：Tests/e2e/cases/contract/19_marshal.mjs（编译 Sources/Adapters/Marshal/*.swift + 19_marshal_probe.swift，产物落 mkdtemp）
-- Level-1 外部真实样本：Fixtures/rmxp-real（OpenXP, MIT）、Fixtures/rmvx-real（rgssad-rs, Apache-2.0 OR MIT）
+- Level-1 外部真实样本：Fixtures/rmxp-real（OpenXP, MIT）、Fixtures/rmvx-real（rgssad-rs, Apache-2.0 OR MIT）、
+  Fixtures/rmvxace-real（Jimicization-Project, CC0-1.0，事件层非空，236 条 101/401 文本）
 - Level-2 合成样本：Fixtures/rmxp|rmvx|rmvxace，重生成 ruby Scripts/gen_rgss_fixture.rb（幂等）
+- RGSS3 浮点怪癖：真实 Ace 数据里 Float 的长度比 %0.17g 文本多 3 字节（NUL + 2 字节），
+  MRI 用 strtod 解析所以照读；reader 按同口径取前缀、保留原始字节写回
 - 断言口径：解析 → 序列化**字节完全相同**；整数编码逐字节对照 ruby 的 Marshal.dump；畸形输入必须返回错误而不是崩

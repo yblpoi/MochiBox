@@ -30,3 +30,7 @@
 *.rxdata  binary
 *.rvdata  binary
 *.rvdata2 binary
+
+# 第三方 fixture 的工程文件要**字节原样**：Game.ini 是 CRLF，且 sha256 记在
+# PROVENANCE 里。text=auto 会把它改成 LF，往返/校验就对不上了。
+Fixtures/*-real/Game.ini -text

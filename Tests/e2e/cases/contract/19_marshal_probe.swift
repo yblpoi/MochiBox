@@ -3,11 +3,13 @@
 //
 // 断言分两层（分工来自实测：外部样本的事件层是空壳，只有数据库/术语层有文本）：
 //
-//   Level-1 外部真实样本（Fixtures/rmxp-real|rmvx-real）—— 只证"能读、能原样写回"
-//     M-L1-*   Marshal 4.8 头、RPG::System / RPG::Map / Table 结构、@words/@terms 形状、
-//              往返字节相同、事件层为空（如实断言 0 条，不假装有对话）、数据库层精确条数
-//     外部样本不含 101/401 对话：XP/VX 两个测试工程的 @events{} 都是空哈希，
-//     EventCommand 只有 code=0 终止符 —— 所以对话断言一律放在 Level-2。
+//   Level-1 外部真实样本（Fixtures/rmxp-real|rmvx-real|rmvxace-real）
+//     M-L1-XP-* / M-L1-VX-*   只证"能读、能原样写回"：Marshal 4.8 头、RPG::System /
+//               RPG::Map / Table 结构、@words/@terms 形状、往返字节相同、数据库层精确条数。
+//              这两份工程不含 101/401 对话：@events{} 是空哈希、EventCommand 只有 code=0
+//              终止符 —— 所以对话断言放在 Level-2 与 M-L1-VXA。
+//     M-L1-VXA-*  第三份真实样本是 CC0 的 VX Ace 工程，事件层**非空**：236 条
+//              对话/指令文本、Terms 是 4 个容器、浮点带 RGSS3 尾随字节。
 //
 //   Level-2 合成样本（Fixtures/rmxp|rmvx|rmvxace）—— 证文本路径与编码/边界
 //     M-L2-*   101/401/102/402/404/405 路径与文本、三版本各不相同的用语表形状、
@@ -84,6 +86,7 @@ struct MarshalProbe {
                         expectedFiles: 14, expectedEntries: 769, expectedActors: 8,
                         termsClass: "RPG::System::Terms", termsField: "terms", termsCount: 33,
                         mapSize: (100, 100, 3, 30000))
+        realVXAceSample(reporter)
         realGameIni(reporter)
 
         // Level-2：合成样本
@@ -276,6 +279,180 @@ struct MarshalProbe {
                 "\(tag) 数据库层有真文本：\(nonEmptyActors.count) 个角色名非空、全工程 \(totalEntries) 条",
                 nonEmptyActors.count == expectedActors && totalEntries == expectedEntries,
                 "角色名 \(nonEmptyActors.count)（期望 \(expectedActors)），总条目 \(totalEntries)（期望 \(expectedEntries)）")
+    }
+
+    // MARK: - M-L1-VXA 真实 VX Ace 样本
+    //
+    // Fixtures/rmvxace-real 是 CC0-1.0 的真实 1.02 工程。它与 XP / VX 两份不同：
+    // 事件层不是空壳（Map001 有事件，全工程 236 条 101/401 对话文本），
+    // 所以这里除结构与往返外，还能断言"真实对话路径"。
+    //
+    // 顺带回归一个只有真实 Ace 数据才有的怪癖：Armors / Classes / Enemies / States /
+    // Weapons / Skills 里的 Float，长度比 %0.17g 文本多 3 字节（文本后有 NUL + 2 字节），
+    // MRI 用 strtod 解析所以照读不误。见 Fixtures/rmvxace-real/PROVENANCE.md。
+
+    static func realVXAceSample(_ r: Reporter) {
+        let base = "Fixtures/rmvxace-real/Data"
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: pathInRepo(base).path))?
+            .filter { $0.hasSuffix(".rvdata2") }.sorted() ?? []
+
+        var headerProblems: [String] = []
+        var roundTripProblems: [String] = []
+        var totalEntries = 0
+        var eventEntries = 0
+        var nonUTF8Entries = 0
+        var undeclaredEntries = 0
+
+        for name in names {
+            let url = pathInRepo("\(base)/\(name)")
+            guard let data = try? Data(contentsOf: url) else {
+                headerProblems.append("\(name): 读不到")
+                continue
+            }
+            if data.count < 2 || data[0] != 0x04 || data[1] != 0x08 {
+                headerProblems.append("\(name): 头不是 04 08，实际 \(hexString(data.prefix(2)))")
+            }
+            do {
+                let doc = try RGSSDocument.load(url: url)
+                if try doc.serialize() != doc.source { roundTripProblems.append("\(name): 往返字节不一致") }
+                let entries = doc.textEntries()
+                totalEntries += entries.count
+                eventEntries += entries.filter { $0.path.contains(".list[") }.count
+                nonUTF8Entries += entries.filter { $0.encoding != .utf8 }.count
+                // 实测：RGSS3 只给含非 ASCII 的字符串写 :E => true，纯 ASCII 的短串没有。
+                // 所以"缺 :E"本身不是错，缺 :E 却不是纯 ASCII 才是。
+                undeclaredEntries += entries.filter {
+                    $0.declared != .flag(true) && !$0.raw.allSatisfy { $0 < 0x80 }
+                }.count
+            } catch {
+                roundTripProblems.append("\(name): \(error)")
+            }
+        }
+
+        r.check("M-L1-VXA-HEADER",
+                "VXA 的 \(names.count) 个 Data/*.rvdata2 都是 Marshal 4.8 头（04 08）",
+                names.count == 27 && headerProblems.isEmpty,
+                "文件数 \(names.count)（期望 27）\n" + headerProblems.joined(separator: "\n"))
+
+        r.check("M-L1-VXA-RT",
+                "VXA 的 \(names.count) 个真实数据文件全部解析且往返字节完全相同",
+                !names.isEmpty && roundTripProblems.isEmpty,
+                roundTripProblems.joined(separator: "\n"))
+
+        // 结构：System 的用语表是**容器形态**（4 个数组），不是 VX 的 33 个扁平字符串
+        var structureDetail: [String] = []
+        var termsOK = false
+        if let system = documentInRepo("\(base)/System.rvdata2") {
+            let className = system.root.className ?? "-"
+            let terms = system.root.ivar(named: "terms")?.record
+            var counts: [String: Int] = [:]
+            for ivar in terms?.ivars ?? [] {
+                let key = ivar.name.name.hasPrefix("@")
+                    ? String(ivar.name.name.dropFirst()) : ivar.name.name
+                counts[key] = ivar.value.arrayElements?.count
+                    ?? ivar.value.hashPairs?.count ?? -1
+            }
+            let expected = ["basic": 8, "params": 8, "etypes": 5, "commands": 24]
+            termsOK = className == "RPG::System"
+                && terms?.className.name == "RPG::System::Terms"
+                && counts == expected
+            structureDetail.append("System 类=\(className) 用语表=\(terms?.className.name ?? "-") "
+                + "容器=\(counts.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ","))")
+        } else {
+            structureDetail.append("读不到 System.rvdata2")
+        }
+
+        var mapOK = false
+        if let mapDoc = documentInRepo("\(base)/Map001.rvdata2") {
+            let map = RGSSMapData(mapDoc.root)
+            let table = map?.table
+            mapOK = mapDoc.root.className == "RPG::Map"
+                && table?.dimension == 3
+                && table?.xSize == 17
+                && table?.ySize == 13
+                && table?.zSize == 4
+                && table?.values.count == 884
+            structureDetail.append("Map001 类=\(mapDoc.root.className ?? "-") "
+                + "Table=dim\(table?.dimension ?? -1) \(table?.xSize ?? -1)x\(table?.ySize ?? -1)x\(table?.zSize ?? -1) n=\(table?.values.count ?? -1)")
+        } else {
+            structureDetail.append("读不到 Map001.rvdata2")
+        }
+        r.check("M-L1-VXA-STRUCT",
+                "VXA 的 RPG::System / RPG::System::Terms（4 个容器）/ RPG::Map / Table 结构解析正确",
+                termsOK && mapOK,
+                structureDetail.joined(separator: "\n"))
+
+        // 事件层：这份样本**不是**空壳，236 条事件指令文本，Map001 有 1 个事件
+        var eventDetail: [String] = ["事件指令参数条目 \(eventEntries) 条（期望 236）"]
+        var eventOK = eventEntries == 236
+        if let mapDoc = documentInRepo("\(base)/Map001.rvdata2") {
+            let count = RGSSMapData(mapDoc.root)?.events.count ?? -1
+            eventDetail.append("Map001 @events \(count) 个（期望 1）")
+            eventOK = eventOK && count == 1
+        }
+        r.check("M-L1-VXA-EVENTS",
+                "VXA 真实样本事件层非空：\(eventEntries) 条对话/指令文本，Map001 有 1 个事件",
+                eventOK,
+                eventDetail.joined(separator: "\n"))
+
+        // 数据库层：全工程 1463 条，10 个角色名非空
+        let actorEntries = documentInRepo("\(base)/Actors.rvdata2")?.textEntries() ?? []
+        let nonEmptyActors = actorEntries.filter { $0.path.hasSuffix(".name") && !($0.text ?? "").isEmpty }
+        r.check("M-L1-VXA-DB",
+                "VXA 数据库层有真文本：\(nonEmptyActors.count) 个角色名非空、全工程 \(totalEntries) 条",
+                nonEmptyActors.count == 10 && totalEntries == 1463,
+                "角色名 \(nonEmptyActors.count)（期望 10），总条目 \(totalEntries)（期望 1463）")
+
+        // 编码：RGSS3 一律 UTF-8 且带 :E => true
+        r.check("M-L1-VXA-ENC",
+                "VXA 的 \(totalEntries) 条文本全部判定为 UTF-8；缺 :E 的 11 条都是纯 ASCII",
+                totalEntries > 0 && nonUTF8Entries == 0 && undeclaredEntries == 0,
+                "非 UTF-8 \(nonUTF8Entries) 条，缺 :E 且不是纯 ASCII \(undeclaredEntries) 条")
+
+        // 浮点怪癖回归：这 6 个文件当初直接 badNumber
+        let floatFiles = ["Armors", "Classes", "Enemies", "States", "Weapons", "Skills"]
+        var floatProblems: [String] = []
+        var quirks = 0
+        var sampleDetail = "未找到带尾随字节的 Float"
+        for name in floatFiles {
+            guard let doc = documentInRepo("\(base)/\(name).rvdata2") else {
+                floatProblems.append("\(name): 解析失败")
+                continue
+            }
+            var floats: [MarshalFloat] = []
+            collectFloats(doc.root, into: &floats)
+            let quirky = floats.filter { ($0.rawBytes?.count ?? 0) > $0.text.utf8.count }
+            quirks += quirky.count
+            if quirky.isEmpty { floatProblems.append("\(name): \(floats.count) 个 Float 里没有带尾随字节的") }
+            if name == "Armors", let first = quirky.first {
+                sampleDetail = "Armors 里 \(quirky.count)/\(floats.count) 个 Float 带尾随字节，"
+                    + "例：\(first.text)（\(first.value)）线上 \(first.rawBytes?.count ?? -1) 字节"
+            }
+        }
+        r.check("M-L1-VXA-FLOAT",
+                "RGSS3 浮点的尾随字节被原样保留（6 个含 Float 的文件都能解析并往返）",
+                floatProblems.isEmpty,
+                (floatProblems + [sampleDetail]).joined(separator: "\n"))
+
+        // Game.ini：真实 VX Ace 写的是 Library=System\RGSS301.dll。
+        // 注意 EngineDetector 的 needle 是 "Library=RGSS3"，子串**不命中**这一行
+        // （中间隔着 "System\"）；这份工程能被认出来靠的是 Data/*.rvdata2 那条证据。
+        let ini = (try? String(contentsOf: pathInRepo("Fixtures/rmvxace-real/Game.ini"), encoding: .utf8)) ?? ""
+        let hasLibraryLine = ini.contains("Library=System\\RGSS301.dll")
+        let needleHits = ini.contains("Library=RGSS3")
+        r.check("M-L1-VXA-GAMEINI",
+                "VXA 的 Game.ini 写的是 Library=System\\RGSS301.dll（Library=RGSS3 这个 needle 不命中，检测靠 Data/*.rvdata2）",
+                hasLibraryLine && !needleHits && ini.contains("RTP=RPGVXAce"),
+                "Library 行=\(hasLibraryLine) needle 命中=\(needleHits)")
+    }
+
+    /// 深度优先收集 Float（对象表可能有环，限深）。
+    static func collectFloats(_ value: MarshalValue, into out: inout [MarshalFloat], depth: Int = 0) {
+        if case .float(let float) = value.kind { out.append(float) }
+        guard depth < 32 else { return }
+        for ivar in value.record?.ivars ?? [] { collectFloats(ivar.value, into: &out, depth: depth + 1) }
+        for element in value.arrayElements ?? [] { collectFloats(element, into: &out, depth: depth + 1) }
+        for pair in value.hashPairs ?? [] { collectFloats(pair.value, into: &out, depth: depth + 1) }
     }
 
     /// OpenXP 的 Game.ini 写的是 Library=RGSS104E.dll，而 EngineDetector 的 needle 是

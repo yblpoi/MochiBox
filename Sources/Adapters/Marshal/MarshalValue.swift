@@ -239,13 +239,24 @@ struct MarshalBignum {
 
 /// "f" —— Float。Ruby 写的是 ASCII 十进制文本（1.5 / nan / inf），
 /// 原样保存才能做到字节级往返。
+///
+/// 实测：RGSS3（Enterbrain 的 Ruby 1.9.3 分支）写 Float 时，在 %0.17g 文本之后
+/// 还会多带 3 个字节（如 0.8 -> "0.8…04" + 00 99 9a）。MRI 的 Marshal 读 Float
+/// 走 strtod，遇到 NUL 就停，所以这 3 字节不影响取值 —— 真实 VX Ace 工程的
+/// Armors/Classes/Enemies/States/Weapons/Skills 都是这个形态（见
+/// Fixtures/rmvxace-real）。因此 text 只保存能解析的前缀，rawBytes 保存线上的
+/// 完整字节，写回时按 rawBytes 原样吐出。
 struct MarshalFloat: Equatable {
+    /// 能解析为浮点的前缀（展示 / 取值用）。
     var text: String
     var value: Double
+    /// 解析时读到的完整字节（含 RGSS3 的尾随字节），没有则按 text 的 UTF-8 写。
+    var rawBytes: Data?
 
-    init(text: String, value: Double) {
+    init(text: String, value: Double, rawBytes: Data? = nil) {
         self.text = text
         self.value = value
+        self.rawBytes = rawBytes
     }
 
     init(value: Double) {

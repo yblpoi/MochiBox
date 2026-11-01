@@ -7,7 +7,7 @@
 | `mv_stub/`、`e2e_game/`、`mock_*.mjs` | 本项目自己写的合成替身（测试页、假后端） | AGPL-3.0（同本仓库） |
 | `rmxp/`、`rmvx/`、`rmvxace/` | 本项目合成的最小工程（`Scripts/gen_rgss_fixture.rb` 生成） | AGPL-3.0（同本仓库） |
 | `rm2000/`、`rm2003/` | 第三方开源测试工程 EasyRPG/TestGame 的**原始数据** | GPL-3.0，见各目录 `PROVENANCE.md` |
-| `rmxp-real/`、`rmvx-real/` | 第三方开源工程的**真实数据文件**（OpenXP / rgssad-rs） | MIT / Apache-2.0 或 MIT，见各目录 `PROVENANCE.md` |
+| `rmxp-real/`、`rmvx-real/`、`rmvxace-real/` | 第三方开源工程的**真实数据文件**（OpenXP / rgssad-rs / Jimicization-Project） | MIT / Apache-2.0 或 MIT / CC0-1.0，见各目录 `PROVENANCE.md` |
 
 ## 第三方数据说明（RPG Maker 2000 / 2003）
 
@@ -27,6 +27,7 @@
 | --- | --- | --- | --- |
 | `rmxp-real/` | [aphadeon/OpenXP](https://github.com/aphadeon/OpenXP) | MIT（`LICENSE-OpenXP.txt`） | `Data/*.rxdata` 15 个 |
 | `rmvx-real/` | [nathaniel-daniel/rgssad-rs](https://github.com/nathaniel-daniel/rgssad-rs) | MIT **或** Apache-2.0（上游双许可，可任选其一；两份全文都在本目录） | `Data/*.rvdata` 14 个 |
+| `rmvxace-real/` | [caynine9/Jimicization-Project](https://github.com/caynine9/Jimicization-Project) | CC0-1.0（`LICENSE-CC0.txt`） | `Data/*.rvdata2` 27 个 + `Game.ini` / `Game.rvproj2` |
 
 commit 与逐文件 sha256 **只在各目录的 `PROVENANCE.md` 维护**，这里不复制——同一份事实存两处，
 上游一改 commit 就会有一处先过期。
@@ -39,7 +40,8 @@ commit 与逐文件 sha256 **只在各目录的 `PROVENANCE.md` 维护**，这�
 - **只有数据表，没有素材**：两个上游目录都只含 `Data` 下的表文件，不含 Graphics / Audio。
   VX 那份走 Git LFS，实际字节从 `media.githubusercontent.com` 的 LFS 端点取得。
 - **字节原样**：未做任何修改，用于「解析 → 序列化 → 字节完全相同」的往返验证。
-- **VX Ace（RGSS3）没有可再分发样本**：唯一找到的 `rmvxa-clean-project` 无许可证声明，且含
-  `Game.exe`、`RGSS301.dll`、`VXACE_EULA.rtf` 与 VL Gothic 字体，明确不可入库。Ace 只用
-  合成工程 `rmvxace/` 覆盖。
+- **VX Ace（RGSS3）有真实样本了**：`rmvxace-real/` 取自 CC0-1.0 的
+  [caynine9/Jimicization-Project](https://github.com/caynine9/Jimicization-Project)，是作者自建的
+  1.02 工程（非 Enterbrain Sample Game）。它的事件层非空（236 条 101/401 对话文本），
+  所以同时承担 Level-1 与部分 Level-2。合成工程 `rmvxace/` 继续保留，覆盖它没用到的事件类型。
 - 逐文件 sha256 与下载命令见各自 `PROVENANCE.md`。

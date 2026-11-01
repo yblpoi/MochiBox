@@ -15,8 +15,9 @@ Marshal 解析/写回在真实数据上的行为。
 
 该测试工程里的文本（角色名、用语表等）随上面的双许可分发，不包含任何商业游戏的素材。
 
-注：VX Ace（RGSS3）没有找到许可清晰的可再分发样本，只用 Scripts/gen_rgss_fixture.rb
-合成的 Fixtures/rmvxace 覆盖。
+注：VX Ace（RGSS3）当时没有找到许可清晰的可再分发样本，只用 Scripts/gen_rgss_fixture.rb
+合成的 Fixtures/rmvxace 覆盖。**2026-11-02 已补上**：真实样本见 `Fixtures/rmvxace-real/`
+（CC0-1.0，caynine9/Jimicization-Project）。
 
 ## 覆盖层级：Level-1（只证结构与往返）
 

@@ -389,23 +389,44 @@ struct MarshalReader {
         let start = offset
         let count = try readCount("浮点文本长度")
         let data = try readBytes(count)
-        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
-            throw MarshalError(kind: .badNumber, offset: start, detail: "浮点文本不是 ASCII")
+        // 按 MRI 的口径取前缀：Ruby 的 Marshal 用 strtod 解析 Float 文本，
+        // RGSS3 多写的尾随字节（NUL + 2 字节）会被自然忽略。
+        guard let text = parsableFloatPrefix(data),
+              let value = parseFloatText(text) else {
+            throw MarshalError(kind: .badNumber, offset: start,
+                               detail: "浮点文本不是数字：\(hexPreview(data))")
         }
-        let value: Double
-        switch text {
-        case "nan": value = .nan
-        case "inf": value = .infinity
-        case "-inf": value = -.infinity
-        default:
-            guard let parsed = Double(text) else {
-                throw MarshalError(kind: .badNumber, offset: start, detail: "浮点文本无法解析：\(text)")
-            }
-            value = parsed
-        }
-        let node = MarshalValue(.float(MarshalFloat(text: text, value: value)))
+        let node = MarshalValue(.float(MarshalFloat(text: text, value: value, rawBytes: data)))
         register(node)
         return node
+    }
+
+    /// 取可打印 ASCII 前缀（RGSS3 的尾随字节以 NUL 开头），从长到短试到能解析为止。
+    /// 长度上限只有几十字节，O(n²) 无所谓。
+    private func parsableFloatPrefix(_ data: Data) -> String? {
+        let printable = data.prefix { $0 >= 0x20 && $0 < 0x7f }
+        var length = printable.count
+        while length > 0 {
+            let slice = printable.prefix(length)
+            if let text = String(data: slice, encoding: .ascii), parseFloatText(text) != nil {
+                return text
+            }
+            length -= 1
+        }
+        return nil
+    }
+
+    private func parseFloatText(_ text: String) -> Double? {
+        switch text {
+        case "nan": return .nan
+        case "inf": return .infinity
+        case "-inf": return -.infinity
+        default: return Double(text)
+        }
+    }
+
+    private func hexPreview(_ data: Data) -> String {
+        data.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")
     }
 
     // MARK: 共用

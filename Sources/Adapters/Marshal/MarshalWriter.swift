@@ -118,7 +118,9 @@ struct MarshalWriter {
             try writeBignum(bignum)
         case .float(let float):
             out.append(0x66)
-            let bytes = Array(float.text.utf8)
+            // 解析来的 Float 按原始字节写回（RGSS3 会带尾随字节）；
+            // 程序化构造的没有 rawBytes，退回文本。
+            let bytes = float.rawBytes.map { Array($0) } ?? Array(float.text.utf8)
             try writeLong(bytes.count)
             out.append(contentsOf: bytes)
         case .string(let string):

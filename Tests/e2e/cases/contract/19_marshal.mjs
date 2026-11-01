@@ -3,13 +3,16 @@
  *
  * 断言分两层，分工来自实测：外部样本的事件层是空壳，只有数据库/术语层有真文本。
  *
- *   Level-1 外部真实样本（Fixtures/rmxp-real|rmvx-real）
+ *   Level-1 外部真实样本（Fixtures/rmxp-real|rmvx-real|rmvxace-real）
  *     M-L1-<ver>-HEADER  Marshal 4.8 头（04 08）
  *     M-L1-<ver>-RT      每个文件解析 -> 序列化，字节完全相同
  *     M-L1-<ver>-STRUCT  RPG::System / @words(XP 20 扁平) / @terms(VX 33 扁平) / RPG::Map / Table
  *     M-L1-<ver>-EMPTY   事件层如实为 0（@events{} 空、无 101/401）—— 不假装有对话
  *     M-L1-<ver>-DB      数据库层精确条数（XP 620 / VX 769，角色名 8 个非空）
  *     M-L1-GAMEINI       OpenXP 的 Library=RGSS104E.dll，子串命中 EngineDetector 的 Library=RGSS1
+ *     M-L1-VXA-*         VX Ace 真实样本：Terms 是 4 个容器、事件层非空（236 条）、
+ *                        RGSS3 浮点尾随字节原样保留、Game.ini 的 Library=RGSS3 needle 不命中
+ *                        （真实工程写 Library=System\RGSS301.dll，检测靠 Data/*.rvdata2）
  *
  *   Level-2 合成样本（Fixtures/rmxp|rmvx|rmvxace）
  *     M-L2-<ver>-RT/EVENT/CODES/TERMS/EDGE/ENC/COUNT/TABLE/MAPINFO/SCRIPTS
