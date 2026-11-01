@@ -58,15 +58,15 @@ struct FullTextPanel: View {
                 actions
                 Divider()
                 fileActions
+                Divider()
                 if let result = state.importResult {
                     Text("导入结果：成功 \(result.accepted)/\(result.total) · 冲突 \(result.conflicts) · 未译跳过 \(result.untranslated)")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12)
-                        .padding(.bottom, 4)
+                        .padding(.vertical, 4)
                 }
-                Divider()
                 listHeader
                 entryList
             } else {
@@ -444,7 +444,7 @@ struct FullTextPanel: View {
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
-        .padding(.bottom, 6)
+        .padding(.vertical, 6)
     }
 
     // MARK: 列表

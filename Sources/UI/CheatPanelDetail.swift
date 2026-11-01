@@ -662,11 +662,7 @@ struct CheatFlowPage: View {
                     HStack(spacing: 8) {
                         ForEach(CheatBattleOp.allCases) { op in
                             Button(op.uiLabel) {
-                                if op == .lose {
-                                    onDanger(.battleLose)
-                                } else {
-                                    Task { await controller.battle(op) }
-                                }
+                                onDanger(.battle(op))
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)

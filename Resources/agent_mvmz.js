@@ -107,6 +107,9 @@
   var replacedTextsByIndex = {};
   var replacedIndexOrder = [];
   var REPLACED_TEXTS_LIMIT = 200;
+  /// 账本描述的是**哪一条消息**：记下它的 _texts 数组引用。startMessage 会被同一条
+  /// 消息调用多次，靠引用区分"同一条又来一遍"和"换了一条新消息"。
+  var replacedTextsOwner = null;
   var sessionToken = (typeof global.__mochiboxSessionToken === 'string') ? global.__mochiboxSessionToken : '';
   var srcLang = 'ja';
   var tgtLang = 'zh-Hans';
@@ -885,7 +888,40 @@
   // ------------------------------------------------------------------
 
   var rpcSeq = 0;
-  var speedState = { multiplier: 1, base: null, wrapped: false, acc: 0 };
+  /// 倍速状态。**挂在 global 上**：重新注入会换一个闭包，但引擎里那段包装体还是旧的，
+  /// 它闭包里读的就是这个对象。若每个闭包各持一份，旧包装会永远读到旧倍率
+  /// （面板显示 ×2、游戏纹丝不动），而且新闭包再也拆不掉它。
+  var speedState = (function () {
+    var existing = null;
+    try { existing = global.__mochiboxSpeed; } catch (e) { existing = null; }
+    if (existing && typeof existing === 'object') {
+      if (typeof existing.multiplier !== 'number') { existing.multiplier = 1; }
+      if (typeof existing.acc !== 'number') { existing.acc = 0; }
+      if (typeof existing.guard !== 'boolean') { existing.guard = false; }
+      return existing;
+    }
+    var fresh = {
+      multiplier: 1,
+      mode: '',
+      orig: null,
+      wrapper: null,
+      target: null,
+      prop: '',
+      origRequestUpdate: null,
+      requestWrapper: null,
+      acc: 0,
+      guard: false
+    };
+    try { global.__mochiboxSpeed = fresh; } catch (e2) { /* ignore */ }
+    return fresh;
+  })();
+
+  /// 转场卡死看门狗（默认开）。采样 500ms，同一份「未完成 fade」快照要连续 2000ms 不变才动手。
+  /// 这里只存采样状态；判据集中在 stallTick 里，便于逐条对照。
+  var STALL_SAMPLE_MS = 500;
+  var STALL_CONFIRM_MS = 2000;
+  var stallTimer = null;
+  var stallState = { sig: '', since: 0, lastFrames: -1, repairs: 0, last: null, samples: 0 };
   var godModeState = { on: false, lockHp: true, lockMp: false, baseSetHp: null, baseSetMp: null, wrapped: false };
   var cheatLog = [];
 
@@ -1077,6 +1113,20 @@
 
   // ---- 只读 ----
 
+  /// 读金钱的唯一入口：优先 `$gameParty.gold()`（插件可能把它改写成自定义货币），
+  /// 取不到或不是有限数一律回落 0 —— NaN 一旦经 gainGold(NaN) 写进 `_gold` 就再也不会自愈，
+  /// 面板读 `_gold || 0` 只会把它显示成 0，看起来像"钱没了"。
+  function partyGold() {
+    try {
+      var party = global.$gameParty;
+      if (!party) { return 0; }
+      var value = (typeof party.gold === 'function') ? party.gold() : party._gold;
+      return Number.isFinite(value) ? value : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
   function cheatSnapshot() {
     var out = {
       scene: sceneName(),
@@ -1085,6 +1135,9 @@
       gold: 0,
       frames: 0,
       speed: speedState.multiplier,
+      /// 看门狗账本：命中次数与最近一次现场（回报告用）。
+      stallRepairs: stallState.repairs,
+      stallLast: stallState.last,
       godMode: godModeState.on,
       player: null,
       party: [],
@@ -1095,7 +1148,7 @@
     } catch (e) { /* ignore */ }
     if (!global.$gameParty) { return out; }
     try {
-      out.gold = global.$gameParty._gold || 0;
+      out.gold = partyGold();
       var map = global.$gameMap;
       out.mapId = mapIdOf(map);
       out.mapName = (map && typeof map.displayName === 'function') ? (map.displayName() || '') : '';
@@ -1301,7 +1354,7 @@
 
   function cheatSetGold(args) {
     requireGame();
-    var current = global.$gameParty._gold || 0;
+    var current = partyGold();
     var target;
     if (typeof args.value === 'number') { target = Math.floor(args.value); }
     else if (typeof args.delta === 'number') { target = current + Math.floor(args.delta); }
@@ -1314,7 +1367,7 @@
       global.$gameParty._gold = target;
     }
     logCheat('setGold', current + '→' + target);
-    return { gold: global.$gameParty._gold || 0 };
+    return { gold: partyGold() };
   }
 
   function cheatSetVariable(args) {
@@ -1628,31 +1681,175 @@
     return { multiplier: multiplier };
   }
 
-  function applySpeed(multiplier) {
+  /// 选出引擎**每帧真的会读**的那个入口。两台引擎的取法完全不同：
+  ///
+  /// - MZ 1.5.0：SceneManager.initGraphics 里执行 `Graphics.setTickHandler(this.update.bind(this))`
+  ///   （rmmz_managers.js:1904-1912），ticker 手里是**绑定后的快照**。之后替换
+  ///   `SceneManager.update` 属性，MZ 一个字节都看不到 —— 这正是旧实现「面板 ×2、游戏不动」的成因。
+  ///   但 Graphics._onTick 每帧现读 `this._tickHandler`（rmmz_core.js:808-811），换它才生效。
+  /// - MV：每帧 SceneManager.requestUpdate() 现读 `this.update` 再 bind（rpg_managers.js:1894-1898），
+  ///   所以包 update 属性是生效的。
+  /// 两者都在时**只认 MZ 入口**，避免同一次 tick 被包装两层。
+  function speedTarget() {
+    var G = global.Graphics;
     var SM = global.SceneManager;
-    if (!SM || typeof SM.update !== 'function') { throw rpcError('cheat_unavailable', 'SceneManager.update 不存在'); }
-    if (!speedState.base) { speedState.base = SM.update; }
-    var base = speedState.base;
-    speedState.multiplier = multiplier;
-    if (multiplier === 1) {
-      SM.update = base;
-      speedState.base = null;
-      speedState.wrapped = false;
-      speedState.acc = 0;
-      return;
+    // 有 setTickHandler = MZ 系。这条路 MZ 只认 _tickHandler，拿不到就明确失败，
+    // 绝不退回「替换 SceneManager.update」那条静默无效的老路（这正是原来的 bug）。
+    if (G && typeof G.setTickHandler === 'function') {
+      if (typeof G._tickHandler === 'function') {
+        return { mode: 'mz', target: G, prop: '_tickHandler', fn: G._tickHandler };
+      }
+      return null;
     }
-    if (!speedState.wrapped) {
-      SM.update = function (delta) {
-        var times = Math.floor(speedState.multiplier);
-        for (var i = 0; i < times; i++) { base.call(this, delta); }
-        var fraction = speedState.multiplier - times;
-        if (fraction > 0) {
-          speedState.acc += fraction;
-          if (speedState.acc >= 1) { speedState.acc -= 1; base.call(this, delta); }
+    if (SM && typeof SM.update === 'function') {
+      return { mode: 'mv', target: SM, prop: 'update', fn: SM.update };
+    }
+    return null;
+  }
+
+  /// 把引擎入口上「属于我们的包装」拆回真身。跨闭包也成立：真身记在
+  /// `__mochiboxOriginal` 上，不依赖当前闭包手里的 speedState。
+  function speedRestoreEntry() {
+    var entry = speedTarget();
+    if (!entry) { return null; }
+    if (belongsToUs(entry.fn)) {
+      var base = entry.fn.__mochiboxOriginal;
+      if (typeof base === 'function') {
+        try { entry.target[entry.prop] = base; } catch (e) { /* ignore */ }
+      }
+      entry = speedTarget();
+    }
+    return entry;
+  }
+
+  function speedUnwrap() {
+    var st = speedState;
+    try {
+      var SM = global.SceneManager;
+      if (SM && typeof SM.requestUpdate === 'function' && belongsToUs(SM.requestUpdate)) {
+        var realRequest = SM.requestUpdate.__mochiboxOriginal;
+        if (typeof realRequest === 'function') { SM.requestUpdate = realRequest; }
+      }
+      if (st.target && st.wrapper && st.prop && st.target[st.prop] === st.wrapper) {
+        st.target[st.prop] = st.orig;
+      }
+    } catch (e) { /* ignore */ }
+    st.mode = '';
+    st.orig = null;
+    st.wrapper = null;
+    st.target = null;
+    st.prop = '';
+    st.origRequestUpdate = null;
+    st.requestWrapper = null;
+    st.acc = 0;
+    st.guard = false;
+  }
+
+  /// 倍率拆成「整数次调用 + 小数累加」，小数部分攒够 1 才多走一次。
+  /// 返回次数恒 >= 1：base 一次都不调 = 帧链断（MV 的 rAF 不再被挂上，画面永久定格）。
+  function speedTimes(multiplier) {
+    var times = Math.floor(multiplier);
+    if (times < 1) { times = 1; }
+    var fraction = multiplier - Math.floor(multiplier);
+    if (fraction > 0) {
+      speedState.acc += fraction;
+      if (speedState.acc >= 1) { speedState.acc -= 1; times += 1; }
+    }
+    return times;
+  }
+
+  /// MZ 的 tick 入口：Graphics._onTick(delta) → 这里 → SceneManager.update(delta)。
+  /// SceneManager.update 内部按 determineRepeatNumber(delta) 决定这一 tick 走几步 updateMain，
+  /// 所以「加速」= 多调几次 base（每次仍传**原样 delta**：传 delta/N 会被
+  /// Math.min(deltaTime, 2) 与 _elapsedTime 累积吃掉，×4 反而退回 ×1）。
+  /// 「减速」= 只调一次、把 delta 按倍率缩小：delta 小于 1 时引擎走 _elapsedTime 分支，
+  /// 攒够 1 才 updateMain 一次，正是天然的慢放。渲染在 _onTick 里、本函数之外，永不掉帧。
+  function makeMzTick(st) {
+    return function (delta) {
+      var m = st.multiplier;
+      var d = (typeof delta === 'number' && isFinite(delta)) ? delta : 1;
+      if (!(m > 0)) { m = 1; }
+      if (m < 1) { return st.orig.call(this, d * m); }
+      var times = speedTimes(m);
+      for (var i = 0; i < times; i++) { st.orig.call(this, d); }
+      return undefined;
+    };
+  }
+
+  /// MV 的 tick 入口：每帧由 requestUpdate 挂上来的 rAF 回调 → SceneManager.update()。
+  /// 两个必须守住的点：
+  ///  1) base 内部 updateMain 末尾会再 requestUpdate()；包装体里把 requestUpdate 临时换成
+  ///     no-op（深度标记 st.guard），结束后只补**一次**真 requestUpdate ——
+  ///     否则一帧挂 N 个 rAF，帧数指数增长。
+  ///  2) base 每帧至少调一次。旧实现 ×0.5 时 floor(0.5)=0 且 acc<1 → base 一次不调 →
+  ///     没人 requestUpdate → rAF 链当场断掉，画面永久定格。
+  /// 速度来源：真实 MV 的 updateMain 用固定步长累加器（_accumulator / _deltaTime）决定
+  /// 这一帧走几步逻辑，同一 rAF 里多调 base 时第二次 fTime≈0、一步都不走。
+  /// 所以有累加器时按倍率预支/克扣它（一条乘法），没有累加器的实现（老 MV / 夹具）才靠多调 base。
+  function makeMvTick(st) {
+    return function () {
+      var SM = global.SceneManager;
+      // 换倍率 / 卸载时，rAF 队列里可能还排着一个**旧包装**的回调：它的 st.orig 已被
+      // speedUnwrap 清空。这条路径必须活着 —— 直接转交给当前引擎入口（它会自己 requestUpdate），
+      // 否则这一次就是最后一帧：没人再挂 rAF，画面永久定格。
+      if (typeof st.orig !== 'function') {
+        var live = (SM && typeof SM.update === 'function' && SM.update !== st.wrapper) ? SM.update : null;
+        if (live) { return live.call(this); }
+        if (SM && typeof st.origRequestUpdate === 'function') { return st.origRequestUpdate.call(SM); }
+        return undefined;
+      }
+      var m = st.multiplier;
+      if (!(m > 0)) { m = 1; }
+      st.guard = true;
+      try {
+        if (SM && typeof SM._accumulator === 'number' && typeof SM._deltaTime === 'number') {
+          SM._accumulator += SM._deltaTime * (m - 1);
+          st.orig.call(this);
+        } else {
+          var times = speedTimes(m);
+          for (var i = 0; i < times; i++) { st.orig.call(this); }
         }
-      };
-      speedState.wrapped = true;
+      } finally {
+        st.guard = false;
+        if (SM && typeof st.origRequestUpdate === 'function') { st.origRequestUpdate.call(SM); }
+      }
+      return undefined;
+    };
+  }
+
+  function applySpeed(multiplier) {
+    var st = speedState;
+    if (st.wrapper || st.requestWrapper) { speedUnwrap(); }
+    var entry = speedRestoreEntry();
+    st.multiplier = multiplier;
+    if (multiplier === 1) { st.acc = 0; return { multiplier: 1 }; }
+    if (!entry) {
+      throw rpcError('cheat_unavailable', '找不到每帧更新入口（Graphics._tickHandler / SceneManager.update）');
     }
+    st.mode = entry.mode;
+    st.target = entry.target;
+    st.prop = entry.prop;
+    st.orig = entry.fn;
+    st.acc = 0;
+    if (entry.mode === 'mv' && global.SceneManager && typeof global.SceneManager.requestUpdate === 'function') {
+      st.origRequestUpdate = global.SceneManager.requestUpdate;
+      st.requestWrapper = function () {
+        if (st.guard) { return undefined; }
+        return st.origRequestUpdate.apply(this, arguments);
+      };
+      st.requestWrapper.__mochiboxHooked = true;
+      st.requestWrapper.__mochiboxOriginal = st.origRequestUpdate;
+    }
+    st.wrapper = (entry.mode === 'mz') ? makeMzTick(st) : makeMvTick(st);
+    st.wrapper.__mochiboxHooked = true;
+    st.wrapper.__mochiboxOriginal = entry.fn;
+    try {
+      entry.target[entry.prop] = st.wrapper;
+      if (entry.mode === 'mv' && st.requestWrapper) { global.SceneManager.requestUpdate = st.requestWrapper; }
+    } catch (e) {
+      throw rpcError('cheat_unavailable', '无法安装每帧入口包装');
+    }
+    return { multiplier: multiplier };
   }
 
   function cheatMoveSpeed(args) {
@@ -1712,37 +1909,125 @@
     return { scene: sceneName() };
   }
 
+  /// 对单个敌人做三步，每步独立 try/catch：某一步失败不能拖垮其余步，
+  /// 也不能让一个人的异常把整场结算变成"少算一个人"。
+  /// 顺序不可换：
+  ///   1. setHp(0) —— 先扣血，后面 die() 里的插件条件（读 hp / 是否濒死）看到的才是最终值；
+  ///   2. die() —— 很多插件把掉落、伤害转金币、偷窃、战利品结算挂在 die() 上（exp 走 expTotal 不受影响，
+  ///      所以缺了它只会表现为"经验正常、金钱为 0"）；但原生 die() 是
+  ///      `_hp = 0; clearStates(); clearBuffs()`，clearStates() 会抹掉上一步 refresh() 挂上的死亡状态；
+  ///   3. 补死亡状态 —— 必须在 die() **之后**，否则会被 clearStates() 清掉；
+  ///      也绝不能只补状态不调 die()，那正是上一轮奖励归零的形态。
+  function killEnemyMember(member, errors) {
+    if (!member) { return; }
+    try {
+      member.setHp(0);
+    } catch (e) {
+      errors.push('setHp: ' + String((e && e.message) || e));
+      state.errors++;
+    }
+    try {
+      if (typeof member.die === 'function') { member.die(); }
+    } catch (e2) {
+      errors.push('die: ' + String((e2 && e2.message) || e2));
+      state.errors++;
+    }
+    try {
+      var dead = (typeof member.isDeathStateAffected === 'function') ? member.isDeathStateAffected() : false;
+      if (!dead && typeof member.addState === 'function' && typeof member.deathStateId === 'function') {
+        member.addState(member.deathStateId());
+      }
+    } catch (e3) {
+      errors.push('addState: ' + String((e3 && e3.message) || e3));
+      state.errors++;
+    }
+  }
+
+  /// 结算结果快照：BattleManager._rewards 是引擎 makeRewards() 写的 {gold, exp, items}。
+  /// 纯观测，不参与结算；读不到给 null —— 字段缺失和"数值就是 0"必须能区分开。
+  function readBattleRewards() {
+    var out = { gold: null, exp: null, items: null };
+    try {
+      var rewards = global.BattleManager && global.BattleManager._rewards;
+      if (!rewards) { return out; }
+      /// gold 故意不过滤 NaN：插件把 Game_Enemy.gold() 改成 undefined 时 goldTotal 就是 NaN，
+      /// 这正是要靠日志看见的那条线索（序列化成 JSON 会落成 null，日志 detail 里保留 NaN）。
+      if (typeof rewards.gold === 'number') { out.gold = rewards.gold; }
+      if (typeof rewards.exp === 'number') { out.exp = rewards.exp; }
+      if (rewards.items && typeof rewards.items.length === 'number') { out.items = rewards.items.length; }
+    } catch (e) { /* ignore */ }
+    return out;
+  }
+
   function cheatBattle(args) {
     requireGame();
     var op = String(args.op || '');
     var BM = global.BattleManager;
     if (!BM) { throw rpcError('cheat_unavailable', 'BattleManager 不存在'); }
     var inBattle = !!BM._phase;
+    var goldBefore = partyGold();
+    var errors = [];
     if (op === 'killAll' || op === 'win') {
+      if (!inBattle) { throw rpcError('cheat_unavailable', '当前不在战斗中'); }
+      // 三步逐敌处理（顺序与理由见 killEnemyMember）：setHp(0) → die() → 补死亡状态。
       try {
         var troop = global.$gameTroop;
-        if (troop && typeof troop.members === 'function') {
-          var members = troop.members();
-          for (var i = 0; i < members.length; i++) {
-            try { members[i].setHp(0); } catch (e) { /* ignore */ }
-            try { members[i].die(); } catch (e2) { /* ignore */ }
-          }
+        if (!troop || typeof troop.members !== 'function') { throw new Error('$gameTroop 不可用'); }
+        var members = troop.members();
+        for (var i = 0; i < members.length; i++) { killEnemyMember(members[i], errors); }
+      } catch (e) {
+        throw rpcError('cheat_failed', '清空敌群 HP 失败: ' + String((e && e.message) || e));
+      }
+      // 结算交给引擎自己的判定：checkBattleEnd 内部会 checkAbort、
+      // $gameParty.isAllDead() → processDefeat、$gameTroop.isAllDead() → processVictory（MZ/MV 同构）。
+      try {
+        var ended = false;
+        if (typeof BM.checkBattleEnd === 'function') { ended = BM.checkBattleEnd(); }
+        if (!ended && op === 'win') {
+          if (typeof BM.processVictory !== 'function') { throw new Error('processVictory 不存在'); }
+          BM.processVictory();
         }
-      } catch (e3) { /* ignore */ }
-      if (op === 'win' && inBattle && typeof BM.processVictory === 'function') { BM.processVictory(); }
+      } catch (e) {
+        throw rpcError('cheat_failed', '战斗结算失败: ' + String((e && e.message) || e));
+      }
     } else if (op === 'escape') {
-      if (typeof BM.processEscape === 'function') { BM.processEscape(); }
+      try {
+        if (typeof BM.processEscape !== 'function') { throw new Error('processEscape 不存在'); }
+        BM.processEscape();
+      } catch (e) {
+        throw rpcError('cheat_failed', '逃跑失败: ' + String((e && e.message) || e));
+      }
     } else if (op === 'lose') {
       try {
         var party = global.$gameParty.members();
         for (var p = 0; p < party.length; p++) { try { party[p].setHp(1); } catch (e) { /* ignore */ } }
       } catch (e4) { /* ignore */ }
-      if (typeof BM.processDefeat === 'function') { BM.processDefeat(); }
+      try {
+        if (typeof BM.processDefeat !== 'function') { throw new Error('processDefeat 不存在'); }
+        BM.processDefeat();
+      } catch (e5) {
+        throw rpcError('cheat_failed', '判负失败: ' + String((e5 && e5.message) || e5));
+      }
     } else {
       throw rpcError('cheat_bad_args', '未知战斗操作: ' + op);
     }
-    logCheat('battle', op);
-    return { op: op, inBattle: inBattle };
+    // 结算结果如实上报：gold 为 0 可能是设计（Enemies.json 本来就是 0，钱由事件/掉落给），
+    // 也可能是插件把本场收益置 0 —— 这里只记录，绝不自动补发。
+    var rewards = readBattleRewards();
+    var goldAfter = partyGold();
+    var detail = op + ' gold=' + goldBefore + '→' + goldAfter;
+    if (rewards.gold !== null) { detail += ' rewardGold=' + rewards.gold; }
+    if (rewards.exp !== null) { detail += ' rewardExp=' + rewards.exp; }
+    if (rewards.items !== null) { detail += ' items=' + rewards.items; }
+    if (errors.length) { detail += ' errors=' + errors.length; }
+    logCheat('battle', detail);
+    return {
+      op: op,
+      inBattle: inBattle,
+      rewards: rewards,
+      gold: { before: goldBefore, after: goldAfter },
+      errors: errors
+    };
   }
 
   function cheatClearPictures() {
@@ -1779,15 +2064,32 @@
   function cheatCloseAllWindows() {
     requireGame();
     var closed = 0;
+    var message = null;
     try {
       var scene = global.SceneManager._scene;
+      // 消息窗不能只 close()：那只是收起动画，$gameMessage 仍然 busy，下一帧
+      // startMessage() 会把同一条消息重新打开；对 active 的选择窗只 close 不
+      // deactivate，还会让 isAnySubWindowActive() 永远为真。所以只有确认"消息
+      // 确实没结束"时才走强制结束序列，否则一个字都不碰。
+      var messageWindow = sceneMessageWindow(scene);
+      if (messageWindow && messageBusy()) {
+        var steps = forceEndMessage(scene);
+        if (steps.length > 0) {
+          closed++;
+          message = steps.join(',');
+        }
+      }
       var layer = scene && scene._windowLayer;
       var children = (layer && layer.children) ? layer.children : [];
       for (var i = 0; i < children.length; i++) {
-        if (children[i] && typeof children[i].close === 'function') { children[i].close(); closed++; }
+        var child = children[i];
+        if (!child || child === messageWindow || typeof child.close !== 'function') { continue; }
+        // 其它窗口照旧 close()；能 deactivate 的先 deactivate，别留 active 残留。
+        try { if (typeof child.deactivate === 'function') { child.deactivate(); } } catch (e2) { /* ignore */ }
+        try { child.close(); closed++; } catch (e3) { /* ignore */ }
       }
     } catch (e) { /* ignore */ }
-    logCheat('closeAllWindows', '×' + closed);
+    logCheat('closeAllWindows', '×' + closed + (message ? ' message=' + message : ''));
     return { closed: closed };
   }
 
@@ -1805,6 +2107,443 @@
     return cheatRecoverAll({ scope: 'party' });
   }
 
+  // ------------------------------------------------------------------
+  // 消息窗：可交互判定 / 强制结束
+  //
+  // 一条 $gameMessage 消息**整段都算 busy**：isBusy() 挂在 _texts.length 上，
+  // 只有 Window_Message.terminateMessage() 里的 $gameMessage.clear() 才归零。
+  // Scene_Map.isSceneChangeOk() = isActive() && !$gameMessage.isBusy()，所以消息
+  // 没走完时 updateScene 整段不跑：updateTransferPlayer / updateCallMenu /
+  // updateEncounter 一起停摆，事件指令 201 也会每帧 return false（解释器停在
+  // 那一条）。战斗胜利带升级文本时正好撞上这个窗口：displayLevelUp 在
+  // Scene_Battle 里 newPage() + add()，endBattle 后面板 pop 回地图，那条消息
+  // 原样跟到地图上。
+  //
+  // 正常出口只有一个：Window_Message.updateMessage → terminateMessage。
+  // 装上 MessageWindowHidden 这类"隐藏消息窗"的插件后，隐藏期间 updateInput()
+  // 直接 return true，update 立刻返回，terminateMessage 永远到不了 —— 自锁。
+  // 下面这组函数是看门狗与 cheat 唯一的破锁手段。
+  //
+  // 判定原则：**只有拿到「消息窗不可交互」的硬证据才动手**。窗口能看见、能按键、
+  // 正在等选择，一律视为正常读消息，什么都不写。
+  // ------------------------------------------------------------------
+
+  /// 取当前场景的消息窗；拿不到返回 null（是"没有可操作对象"，不是异常）。
+  function sceneMessageWindow(scene) {
+    try { return (scene && scene._messageWindow) || null; } catch (e) { return null; }
+  }
+
+  /// $gameMessage 是否还在同一条未结束的消息里。读不到一律按"看不出 busy"返回
+  /// false：宁可少修一次，也不能在状态不明时写引擎。
+  function messageBusy() {
+    try {
+      var message = global.$gameMessage;
+      return !!(message && typeof message.isBusy === 'function' && message.isBusy());
+    } catch (e) { return false; }
+  }
+
+  /// 当前消息全文。只用于比对"两次采样的文本是否同一份"，不参与翻译。
+  function messageAllText() {
+    try {
+      var message = global.$gameMessage;
+      if (message && typeof message.allText === 'function') {
+        var text = message.allText();
+        return (typeof text === 'string') ? text : '';
+      }
+    } catch (e) { /* ignore */ }
+    return '';
+  }
+
+  /// $gameMessage 是否真的在等玩家做输入（选择 / 数字 / 道具）。
+  function messageWaitingForInput() {
+    try {
+      var message = global.$gameMessage;
+      if (!message) { return false; }
+      if (typeof message.isChoice === 'function' && message.isChoice()) { return true; }
+      if (typeof message.isNumberInput === 'function' && message.isNumberInput()) { return true; }
+      if (typeof message.isItemChoice === 'function' && message.isItemChoice()) { return true; }
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
+  /// $gamePlayer 是否带着一次未落地的传送。**只观测不改写**：那是上一次合法
+  /// 传送的凭据，清掉等于吞掉一次传送。
+  function playerTransferring() {
+    try {
+      var player = global.$gamePlayer;
+      return !!(player && player._transferring);
+    } catch (e) { return false; }
+  }
+
+  /// 是否停在 Scene_Map 上。instanceof 优先（插件子类也算），退回到类名。
+  function isSceneMap(scene) {
+    try {
+      if (!scene) { return false; }
+      if (typeof global.Scene_Map === 'function' && scene instanceof global.Scene_Map) { return true; }
+      return (sceneName() === 'Scene_Map');
+    } catch (e) { return false; }
+  }
+
+  /// 消息窗的原始观测量（只读）。字段缺失一律取"看不出问题"的那一侧：
+  /// 读不到 visible 就当可见、读不到 active 就当没 active —— 拿不准不给证据。
+  function messageWindowState(w) {
+    var state = { visible: true, closed: false, opening: false, hidden: false, active: false };
+    if (!w) { state.visible = false; return state; }
+    try { state.visible = (w.visible !== false); } catch (e) { state.visible = true; }
+    try { state.closed = (typeof w.isClosed === 'function') ? !!w.isClosed() : false; } catch (e2) { state.closed = false; }
+    try { state.opening = (w._opening === true); } catch (e3) { state.opening = false; }
+    try { state.hidden = (w._hideByMessageWindowHidden === true); } catch (e4) { state.hidden = false; }
+    try {
+      state.active = (typeof w.isAnySubWindowActive === 'function') ? !!w.isAnySubWindowActive() : false;
+    } catch (e5) { state.active = false; }
+    return state;
+  }
+
+  /// 消息窗此刻**能不能让玩家按键推进**。true = 正常读消息，谁都不许动；
+  /// false = 没有任何一条路径能走到 terminateMessage，就是那个死锁。
+  /// 每条判据都单独成立，不做推断式合并。
+  function messageInteractable(scene) {
+    var w = sceneMessageWindow(scene);
+    // 没有消息窗：消息永远没人消费，也就永远不 clear。
+    if (!w) { return false; }
+    var state = messageWindowState(w);
+    // 画面上根本没有窗口（插件把它藏了，或者关掉之后没再打开）。
+    if (!state.visible) { return false; }
+    // isClosed() 且不在 opening：窗口不会自己 update 到 terminateMessage。
+    if (state.closed && !state.opening) { return false; }
+    // MessageWindowHidden：隐藏期间 updateInput() 直接 return true，消息不推进。
+    if (state.hidden) { return false; }
+    // 子窗 active 残留：isAnySubWindowActive() 恒真，但 $gameMessage 并没有在等
+    // 选择/数字/道具输入 —— 这是"关子窗只 close 不 deactivate"留下的死锁。
+    if (state.active && !messageWaitingForInput()) { return false; }
+    return true;
+  }
+
+  /// MZ 与 MV 的子窗命名不同，两套都要认：MZ 是 _choiceListWindow /
+  /// _numberInputWindow / _eventItemWindow，MV 是 _choiceWindow / _numberWindow /
+  /// _eventWindow。缺哪套就跳过哪套。
+  var MESSAGE_SUB_WINDOW_KEYS = ['_choiceListWindow', '_numberInputWindow', '_eventItemWindow',
+    '_choiceWindow', '_numberWindow', '_eventWindow'];
+
+  function messageSubWindows(w) {
+    var out = [];
+    for (var i = 0; i < MESSAGE_SUB_WINDOW_KEYS.length; i++) {
+      var key = MESSAGE_SUB_WINDOW_KEYS[i];
+      try {
+        if (w[key]) { out.push({ key: key, window: w[key] }); }
+      } catch (e) { /* ignore */ }
+    }
+    return out;
+  }
+
+  /// 把一个卡住的消息**结束掉**，顺序是引擎自己那条路径的顺序。
+  /// 只调 close() 不行：$gameMessage 仍然 busy，下一帧 canStart() 会把同一条消息
+  /// 重新打开；只调 $gameMessage.clear() 也不行：_textState 还在，窗口会继续把
+  /// 旧文本画完，pause / _waitCount 还会污染下一条消息。
+  /// 返回实际执行的步骤名（日志/账本用）；一步没做、或做完仍然 busy 时返回 []。
+  function forceEndMessage(scene) {
+    var steps = [];
+    var w = sceneMessageWindow(scene);
+    var message = null;
+    try { message = global.$gameMessage || null; } catch (e) { message = null; }
+    if (w) {
+      // 1) 文本解析状态与等待计数：不清这两项，窗口会把旧文本继续画完。
+      try { w._textState = null; steps.push('textState'); } catch (e1) { /* ignore */ }
+      try { w._waitCount = 0; steps.push('waitCount'); } catch (e2) { /* ignore */ }
+      // 2) 所有"暂停 / 快进"标志，漏一个下一条消息就会在开头停住。
+      try {
+        w.pause = false;
+        w._pauseSkip = false;
+        w._showFast = false;
+        w._lineShowFast = false;
+        steps.push('pauseFlags');
+      } catch (e3) { /* ignore */ }
+      // 3) 子窗先 deactivate 再 close。顺序反了 active 清不掉，
+      //    isAnySubWindowActive() 永远为真 —— 那是拿旧卡死换新卡死。
+      var subs = messageSubWindows(w);
+      for (var i = 0; i < subs.length; i++) {
+        try {
+          if (typeof subs[i].window.deactivate === 'function') { subs[i].window.deactivate(); }
+        } catch (e4) { /* ignore */ }
+        try {
+          if (typeof subs[i].window.close === 'function') { subs[i].window.close(); }
+        } catch (e5) { /* ignore */ }
+        steps.push(subs[i].key);
+      }
+      // 4) 引擎自己的 terminateMessage：close() + _goldWindow.close() +
+      //    $gameMessage.clear()。_goldWindow 可能为 null（插件删掉了金钱窗），
+      //    那时 terminateMessage 会在 close() 之后抛，clear() 永远到不了，所以先判空。
+      var gold = null;
+      try { gold = w._goldWindow || null; } catch (e6) { gold = null; }
+      if (typeof w.terminateMessage === 'function' && gold) {
+        try {
+          w.terminateMessage();
+          steps.push('terminateMessage');
+        } catch (e7) {
+          try { if (typeof w.close === 'function') { w.close(); steps.push('close'); } } catch (e8) { /* ignore */ }
+        }
+      } else {
+        try { if (typeof w.close === 'function') { w.close(); steps.push('close'); } } catch (e9) { /* ignore */ }
+      }
+    }
+    // 5) 兜底（拿不到消息窗时这是唯一一步）：$gameMessage 必须不再 busy。
+    try {
+      if (message && typeof message.isBusy === 'function' && message.isBusy()
+        && typeof message.clear === 'function') {
+        message.clear();
+        steps.push('message.clear');
+      }
+    } catch (e10) { /* ignore */ }
+    // 6) 校验：清完还 busy（或读不到状态）就是没修好，返回空表示"别记账"，
+    //    下个采样窗口再试。绝不虚报一次修复。
+    try {
+      if (!message || typeof message.isBusy !== 'function') { return []; }
+      if (message.isBusy()) { return []; }
+    } catch (e11) { return []; }
+    return steps;
+  }
+
+  // ------------------------------------------------------------------
+  // 转场 / 淡入淡出：读法、修复、看门狗
+  //
+  // 语义全部来自引擎原文（MZ 1.5.0 rmmz_scenes.js / rmmz_objects.js，MV 1.6.2
+  // rpg_scenes.js / rpg_objects.js），逐行核对过：
+  //   Scene_Base.startFadeIn : _fadeSign = 1,  _fadeDuration = duration, opacity = 255
+  //   Scene_Base.startFadeOut: _fadeSign = -1, _fadeDuration = duration, opacity = 0
+  //   Scene_Base.updateFade  : _fadeSign > 0 → opacity -= opacity / d
+  //                            _fadeSign < 0 → opacity += (255 - opacity) / d
+  //                            _fadeDuration--
+  //   d 递减到 1 时代入即得**终止值**：_fadeSign > 0 → 0；_fadeSign < 0 → 255。
+  //   载体不同：MV 写 _fadeSprite.opacity，MZ 写 _fadeOpacity（走 ColorFilter，没有 sprite）。
+  //   Game_Screen.updateFadeOut: _brightness = _brightness * (d - 1) / d  → 终止 0
+  //   Game_Screen.updateFadeIn : _brightness = (_brightness * (d - 1) + 255) / d → 终止 255
+  //   _fadeOutDuration-- / _fadeInDuration--
+  // 注意 Scene_Base.initialize 里 _fadeSign 与 opacity 的初值都是 0，所以
+  // 「sign === 0」必须当成「没在 fade」，只看 opacity 会把从没淡入过的场景误判成卡住。
+  // ------------------------------------------------------------------
+
+  function sceneFadeOpacity(scene) {
+    if (!scene) { return null; }
+    if (scene._fadeSprite && typeof scene._fadeSprite.opacity === 'number') { return scene._fadeSprite.opacity; }
+    if (typeof scene._fadeOpacity === 'number') { return scene._fadeOpacity; }
+    return null;
+  }
+
+  function setSceneFadeOpacity(scene, value) {
+    if (!scene) { return false; }
+    if (scene._fadeSprite && typeof scene._fadeSprite.opacity === 'number') {
+      scene._fadeSprite.opacity = value;
+      return true;
+    }
+    if (typeof scene._fadeOpacity === 'number') {
+      scene._fadeOpacity = value;
+      return true;
+    }
+    return false;
+  }
+
+  /// 一次「没走完」的场景 fade。返回 null 表示没有需要收尾的东西。
+  function pendingSceneFade(scene) {
+    if (!scene) { return null; }
+    var sign = (typeof scene._fadeSign === 'number') ? scene._fadeSign : 0;
+    if (sign === 0) { return null; }
+    var duration = (typeof scene._fadeDuration === 'number') ? scene._fadeDuration : 0;
+    var opacity = sceneFadeOpacity(scene);
+    var mid = (opacity !== null && opacity > 0.5 && opacity < 254.5);
+    if (!(duration > 0) && !mid) { return null; }
+    return { sign: sign, duration: duration, opacity: opacity, target: (sign > 0 ? 0 : 255) };
+  }
+
+  /// 一次「没走完」的 $gameScreen fade。只看 duration：亮度停在中间值可能是
+  /// 事件故意留下的（比如整段剧情压暗），没有 duration 就无权判定它卡住了。
+  function pendingScreenFade(screen) {
+    if (!screen) { return null; }
+    var outDur = (typeof screen._fadeOutDuration === 'number') ? screen._fadeOutDuration : 0;
+    var inDur = (typeof screen._fadeInDuration === 'number') ? screen._fadeInDuration : 0;
+    if (!(outDur > 0) && !(inDur > 0)) { return null; }
+    var brightness = (typeof screen._brightness === 'number') ? screen._brightness : 255;
+    return { out: outDur, in: inDur, brightness: brightness, target: (outDur > 0 ? 0 : 255) };
+  }
+
+  /// 把一次卡住的 fade **做完**：时长归零 + 亮度/不透明度落到该 fade 的终止值。
+  /// 幂等：修完 pending 变 null，再调一次什么都不写。绝不碰没有未完成 fade 的状态。
+  function repairStuckFade(scene, screen) {
+    var fixed = [];
+    try {
+      var sceneFade = pendingSceneFade(scene);
+      if (sceneFade) {
+        if (sceneFade.duration > 0) { scene._fadeDuration = 0; fixed.push('scene.fadeDuration'); }
+        if (sceneFade.opacity !== null && setSceneFadeOpacity(scene, sceneFade.target)) {
+          fixed.push('scene.fadeOpacity');
+        }
+        // MZ 的 ColorFilter 是 updateFade 之外单独刷的，改完 _fadeOpacity 要重刷一次才可见。
+        if (typeof scene.updateColorFilter === 'function') {
+          try { scene.updateColorFilter(); } catch (e) { /* ignore */ }
+        }
+      }
+      var screenFade = pendingScreenFade(screen);
+      if (screenFade) {
+        if (screenFade.out > 0) { screen._fadeOutDuration = 0; fixed.push('screen.fadeOut'); }
+        if (screenFade.in > 0) { screen._fadeInDuration = 0; fixed.push('screen.fadeIn'); }
+        screen._brightness = screenFade.target;
+        fixed.push('screen.brightness');
+      }
+    } catch (e2) { /* ignore */ }
+    return fixed;
+  }
+
+  /// 采样一次「当前是否有可判定的卡死」。返回 null = 没有可判定的对象，看门狗不动手。
+  /// 两路并列，**判据互不复用**：
+  ///   fade 路：场景 / $gameScreen 上有没走完的 fade（sign !== 0 且 duration > 0
+  ///            或 opacity 在中间）。消息窗真能按键推进时让路。
+  ///   message 路（只认 Scene_Map）：$gameMessage busy 且消息窗**不可交互**。
+  ///            这条路上的场景根本没有 fade（_fadeSign 恒 0、_brightness 恒 255），
+  ///            用 fade 判据去筛它一个字节都不会动。
+  function stallSample() {
+    var scene = global.SceneManager && global.SceneManager._scene;
+    if (!scene) { return null; }
+    var sceneFade = pendingSceneFade(scene);
+    var screen = global.$gameScreen;
+    var screenFade = pendingScreenFade(screen);
+    var isFade = !!(sceneFade || screenFade);
+    var busy = messageBusy();
+    var interactable = messageInteractable(scene);
+    if (isFade) {
+      // 玩家正在读一条**能按键推进**的消息：让路，fade 会在他读完时接着走完。
+      // 消息窗不可交互时不让路 —— 隔着一条永远走不完的消息的 fade 同样是卡死。
+      if (busy && interactable) { return null; }
+    } else {
+      // 没有 fade 的场景只有一种可判定的卡死：地图上的消息窗拦住了 updateScene。
+      // 其它场景（战斗 / 菜单 / 标题）没有"传送被挡住"这条因果，不越权。
+      if (!isSceneMap(scene)) { return null; }
+      if (!busy || interactable) { return null; }
+    }
+    var w = sceneMessageWindow(scene);
+    var windowState = messageWindowState(w);
+    var text = busy ? messageAllText() : '';
+    return {
+      kind: isFade ? 'fade' : 'message',
+      scene: sceneName(),
+      fadeSign: sceneFade ? sceneFade.sign : 0,
+      fadeDuration: sceneFade ? sceneFade.duration : 0,
+      opacity: sceneFade ? sceneFade.opacity : null,
+      brightness: (screen && typeof screen._brightness === 'number') ? screen._brightness : null,
+      inDuration: screenFade ? screenFade.in : 0,
+      outDuration: screenFade ? screenFade.out : 0,
+      isBusy: busy,
+      textLen: text.length,
+      /// 全文原样进签名，不做哈希：本文件按约束不含哈希实现，而且指纹碰撞会把
+      /// "文本变了"误判成"没变" —— 那是唯一会误杀正常读消息的路径。
+      text: text,
+      transferring: playerTransferring(),
+      visible: windowState.visible,
+      hidden: windowState.hidden,
+      active: windowState.active
+    };
+  }
+
+  /// 签名把**所有**参与判定的字段都算进去（不只是 fade 六元组）：文本一变签名就变，
+  /// 计时重来 —— "连续 STALL_CONFIRM_MS 文本没动"因此是字面意义上的没动，而不是
+  /// "上一次采样时恰好没动"。文本用原串比对（不是指纹），不留碰撞导致的误判。
+  function stallSignature(sample) {
+    var opacity = (sample.opacity === null) ? '-' : Math.round(sample.opacity * 100) / 100;
+    var brightness = (sample.brightness === null) ? '-' : sample.brightness;
+    return [sample.kind, sample.scene, sample.fadeSign, sample.fadeDuration, opacity,
+      brightness, sample.inDuration, sample.outDuration,
+      sample.isBusy ? 1 : 0, sample.textLen, sample.visible ? 1 : 0,
+      sample.hidden ? 1 : 0, sample.active ? 1 : 0,
+      sample.transferring ? 1 : 0, sample.text].join('|');
+  }
+
+  /// 看门狗主体。四个条件**同时**成立才动手：
+  ///   1) Graphics.frameCount 相比上次采样有增长（ticker 还活着，不是引擎报错停摆）
+  ///   2) document.hasFocus() 为 true（排除 MZ 失焦自动暂停 SceneManager.updateScene）
+  ///   3) 采样到了可判定的卡死：fade 没走完（且消息窗不可交互），或者地图上的
+  ///      消息窗 busy 且不可交互（见 stallSample 的两路）
+  ///   4) 这份快照连续 STALL_CONFIRM_MS 完全不变（含消息全文的指纹）
+  function stallTick() {
+    try {
+      if (!installed) { return; }
+      stallState.samples++;
+      var frames = (global.Graphics && typeof global.Graphics.frameCount === 'number') ? global.Graphics.frameCount : -1;
+      var grew = (stallState.lastFrames >= 0) && (frames > stallState.lastFrames);
+      stallState.lastFrames = frames;
+      var focused = true;
+      try {
+        if (global.document && typeof global.document.hasFocus === 'function') {
+          focused = !!global.document.hasFocus();
+        }
+      } catch (e) { focused = true; }
+      var sample = (grew && focused) ? stallSample() : null;
+      if (!sample) { stallState.sig = ''; stallState.since = 0; return; }
+      var sig = stallSignature(sample);
+      var now = nowMs();
+      if (sig !== stallState.sig) { stallState.sig = sig; stallState.since = now; return; }
+      if (now - stallState.since < STALL_CONFIRM_MS) { return; }
+      var scene = global.SceneManager._scene;
+      // 两路各自修自己那一类：fade 走补完动画，message 走引擎那条 terminate 序列。
+      var fixed = (sample.kind === 'message')
+        ? forceEndMessage(scene)
+        : repairStuckFade(scene, global.$gameScreen);
+      // 采样到判定之间可能已被别的路径（读档 / 事件推进）修好：没有实际写入就不记账。
+      if (fixed.length === 0) { stallState.sig = ''; stallState.since = 0; return; }
+      stallState.repairs++;
+      stallState.last = stallLastOf(sample, now);
+      stallState.sig = '';
+      stallState.since = 0;
+      logCheat('stallRepair', sample.kind + ' ' + fixed.join(','));
+    } catch (e2) {
+      state.errors++;
+    }
+  }
+
+  /// 账本条目。message 路只记判定用到的字段，**文本内容不进日志**
+  /// （日志会随报告发出去，不抄对白）。
+  function stallLastOf(sample, now) {
+    var at = (typeof Date !== 'undefined' && Date.now) ? Date.now() : now;
+    if (sample.kind === 'message') {
+      return {
+        at: at,
+        kind: 'message',
+        scene: sample.scene,
+        isBusy: sample.isBusy,
+        transferring: sample.transferring,
+        hidden: sample.hidden,
+        active: sample.active,
+        textLen: sample.textLen
+      };
+    }
+    return {
+      at: at,
+      kind: 'fade',
+      scene: sample.scene,
+      fadeSign: sample.fadeSign,
+      fadeDuration: sample.fadeDuration,
+      opacity: sample.opacity,
+      brightness: sample.brightness
+    };
+  }
+
+  /// 引擎对象到位才排期：注入早于场景启动时排了也是空转，而且与补装定时器一样
+  /// 要保持「安装期不留下常驻定时器」的既有约定。宿主握手（config）时会再兜一次底。
+  function startStallWatch() {
+    if (stallTimer !== null) { return; }
+    if (typeof global.setInterval !== 'function') { return; }
+    if (!(global.Graphics && typeof global.Graphics.frameCount === 'number')) { return; }
+    if (!global.SceneManager) { return; }
+    try { stallTimer = global.setInterval(stallTick, STALL_SAMPLE_MS); } catch (e) { stallTimer = null; }
+  }
+
+  function stopStallWatch() {
+    if (stallTimer !== null) {
+      try { global.clearInterval(stallTimer); } catch (e) { /* ignore */ }
+      stallTimer = null;
+    }
+    stallState.sig = '';
+    stallState.since = 0;
+    stallState.lastFrames = -1;
+  }
+
   function cheatRepair() {
     requireGame();
     var fixed = [];
@@ -1817,6 +2556,10 @@
       if (interp && typeof interp._waitCount === 'number' && interp._waitCount > 0) {
         interp._waitCount = 0; fixed.push('interpreter.wait');
       }
+      // 停在半截的转场：把这次 fade 做完（时长归零 + 落到终止值）。
+      // 只清 _waitCount 治不了「画面停在半亮、事件卡在 wait 之后」。
+      var fadeFixed = repairStuckFade(scene, global.$gameScreen);
+      for (var fi = 0; fi < fadeFixed.length; fi++) { fixed.push(fadeFixed[fi]); }
       if (global.Graphics) {
         if (global.Graphics._errorShowed) { global.Graphics._errorShowed = false; fixed.push('graphics.error'); }
         if (global.Graphics._errorPrinter && typeof global.Graphics._errorPrinter.clear === 'function') {
@@ -2511,6 +3254,16 @@
     }
   }
 
+  /// 当前 $gameMessage._texts 的数组引用；不是数组时给 null（无法认身份）。
+  /// **不能**在这里新建数组：null 是"这条消息没有可记账的文本"，不是"新消息"。
+  function messageTextsRef() {
+    try {
+      var message = global.$gameMessage;
+      var texts = message && message._texts;
+      return (Object.prototype.toString.call(texts) === '[object Array]') ? texts : null;
+    } catch (e) { return null; }
+  }
+
   /** 清空"下标 → 原文"映射。映射只描述**当前这条消息**，换消息/关闭翻译都必须先清。 */
   function clearReplacedTexts() {
     replacedTextsByIndex = {};
@@ -2522,7 +3275,12 @@
     var message = global.$gameMessage;
     var texts = message && message._texts;
     if (Object.prototype.toString.call(texts) === '[object Array]') {
-      for (var i = 0; i < texts.length; i++) {
+      // 按账本下标回写，而不是按 texts 的长度遍历：账本可能留着上一条消息的下标。
+      for (var k = 0; k < replacedIndexOrder.length; k++) {
+        var i = replacedIndexOrder[k];
+        // 越界下标一律不写：texts[i] = ... 会把数组撑出空洞，而 hasText() 只看
+        // texts.length —— 空洞会让"没有文本"凭空变成"有文本"，下一条消息就多一行。
+        if (typeof i !== 'number' || i < 0 || i >= texts.length) { continue; }
         if (!Object.prototype.hasOwnProperty.call(replacedTextsByIndex, i)) { continue; }
         try { texts[i] = replacedTextsByIndex[i]; } catch (e) { /* frozen array */ }
       }
@@ -2539,14 +3297,18 @@
     orig.startMessage = base;
     var wrapper = function () {
       try {
-        // 映射只描述**当前这条消息**：先清掉上一条的，再开始处理 texts。
-        // 关翻译时、或本条一行都没命中时不会再写映射，若不清就会残留上条的下标，
-        // 关闭翻译会把上条的原文写进这条消息窗。
-        clearReplacedTexts();
+        // 映射只描述**当前这条消息**，但同一条消息可能被 startMessage 调用多次
+        // （战斗中一次、地图一次、换场景又一次）：第二次进来 texts 里已经是译文，
+        // 这时清账会把中文当成原文重新记账，之后关翻译又把中文当原文写回去。
+        // 用 _texts 的数组引用认身份：引用没变 = 同一条消息（账留着）；换数组 =
+        // 新消息（清账）。引擎换消息一定换数组（clear / newPage / add 都会换）。
+        var texts = messageTextsRef();
+        if (texts !== replacedTextsOwner) {
+          clearReplacedTexts();
+          replacedTextsOwner = texts;
+        }
         if (state.enabled) {
-          var message = global.$gameMessage;
-          var texts = message && message._texts;
-          if (Object.prototype.toString.call(texts) === '[object Array]' && texts.length > 0) {
+          if (texts && texts.length > 0) {
             var prepared = [];
             var anyText = false;
             var hit = 0;
@@ -4325,6 +5087,8 @@
       // 要拖到下一次 createGameObjects 才变中文。排一次防抖回写补齐（不直接同步调：
       // 首次注入时语料还是空的，同步跑一遍纯属浪费主线程）。
       try { scheduleDataPatch(); } catch (e4) { state.errors++; }
+      // 转场卡死看门狗：默认开，判据见 stallTick（帧数在涨 + 有焦点 + 未完成 fade + 2s 不变）。
+      try { startStallWatch(); } catch (e5) { state.errors++; }
       if (typeof global.Window_Base === 'undefined' && typeof global.Bitmap === 'undefined') {
         emit('error', { code: 'engine_symbols_missing', message: 'Window_Base / Bitmap 均不存在', stack: null });
       }
@@ -4425,6 +5189,11 @@
       mediaPatchState = 'off';
       // 桥接层：取消所有 rVFC、清 WeakMap、把 PIXI.Texture.from 还原。
       unpatchMediaBridge();
+      // 倍速与看门狗：定时器先停，再把每帧入口还原成真身。
+      // 顺序与 uninstall 的其它块一致（先停生产者，再撤 hook）：看门狗回调里会读
+      // SceneManager._scene 并可能写引擎状态，必须在卸 hook 之前就断掉。
+      stopStallWatch();
+      try { applySpeed(1); } catch (e10) { /* ignore */ }
       installed = false;
       installedHooks = [];
     } catch (e) {
@@ -4476,7 +5245,12 @@
         mediaBridgeFrames: mediaBridgeFrames,
         mediaBridgeReaped: mediaBridgeReaped,
         mediaBridgeSweeping: mediaBridgeSweepTimer !== null,
-        dataPatch: dataPatchStats()
+        dataPatch: dataPatchStats(),
+        speed: speedState.multiplier,
+        speedMode: speedState.mode,
+        stallRepairs: stallState.repairs,
+        stallLast: stallState.last,
+        stallSamples: stallState.samples
       });
     } catch (e) {
       return '{}';
@@ -4575,6 +5349,8 @@
         // 字体链每次绘制现算，这里只需确保 patch 还在（幂等），无需重打。
         applyGameFont();
         requestRepaint();
+        // 兜底排期看门狗：注入时引擎还没起来的话，宿主握手这次把它补上。
+        try { startStallWatch(); } catch (e9) { /* ignore */ }
       } else if (type === 'setTranslation') {
         putTranslation(payload);
         scheduleDataPatch();

@@ -168,8 +168,10 @@ final class SessionController: ObservableObject {
     /// 判定阈值：满 100 行才看比例，避免开局几行标签就误报。
     private let chineseProbeRowThreshold: Int = 100
     private let chineseProbeKanaRatio: Double = 0.02
-    /// “本会话已提示过”的闩。用户点掉提示后 chineseSuspected 会变 false，
-    /// 但比例仍然低 —— 没有这个闩，下一行文本就会把提示再弹出来。
+    /// “本会话已提示过”的闩。提示弹出后没有任何按钮能把它关掉：`chineseSuspected`
+    /// 只由会话侧探测置 true（一次性闩，换会话才清），会话内唯一清零路径是主开关
+    /// `setTranslationEnabled(true)`（关闭翻译不清）—— 而比例仍然低：没有这个闩，
+    /// 下一行文本就会把提示再弹出来。
     private var chineseProbeFired: Bool = false
 
     /// 信封协议不匹配的丢弃计数。
@@ -674,7 +676,9 @@ final class SessionController: ObservableObject {
         // 用全文扫描时判定的类别，保证两条链路对同一句算出同一个 profile。
         let category = fullText.category(forText: joined) ?? .dialogue
         let allowSingle = category.allowsSingleCharTerms
-        let hints = glossaryBox.snapshot().pairs(in: [joined], includeSingleChar: allowSingle)
+        // 走 GlossaryBox 的逐文本缓存：同一句的重复绘制不必每次重扫整张术语表
+        // （788 条术语实测 1.8ms/次，见 GlossaryBox.pairs 的注释）。
+        let hints = glossaryBox.pairs(in: joined, includeSingleChar: allowSingle)
         let profile = TranslationProfile.id(category: category, pairs: hints)
         let cacheKey = Segmenter.cacheKey(
             engineFamily: K.engineFamily,
@@ -873,6 +877,11 @@ final class SessionController: ObservableObject {
             }
             inFlightCacheKeys.subtract(orphaned)
         }
+        // 整批结果合并成一次流写入：`applyTranslations` 内部只做一次整表拷贝与一次发布。
+        // 逐条调 `applyTranslation` 时，60 条结果 = 60 次 5000 行 COW（实测 13ms），
+        // 大批量（全文回填 / 连续对白）会在主线程上叠成可见卡顿。
+        var updates: [TextStreamStore.TranslationUpdate] = []
+        var pushes: [(cacheKey: String, raw: String, segments: [Segment])] = []
         for item in result.items {
             inFlightCacheKeys.remove(item.key)
             // 全文链路的 cacheKey 天然不在实时映射里（它没有页面行）。旧实现要等到
@@ -886,16 +895,20 @@ final class SessionController: ObservableObject {
                 continue
             }
             delivered[item.key] = (segments: segments, backend: result.backend)
-            stream.applyTranslation(
+            updates.append(TextStreamStore.TranslationUpdate(
                 cacheKey: item.key,
                 translatedRaw: result.backend == .passthrough ? nil : raw,
                 segments: result.backend == .passthrough ? nil : segments,
                 backend: result.backend,
                 latencyMs: item.latencyMs,
                 cached: item.cached
-            )
+            ))
             translatedCount += 1
-            pushTranslation(cacheKey: item.key, raw: raw, segments: segments)
+            pushes.append((cacheKey: item.key, raw: raw, segments: segments))
+        }
+        stream.applyTranslations(updates)
+        for push in pushes {
+            pushTranslation(cacheKey: push.cacheKey, raw: push.raw, segments: push.segments)
         }
     }
 
@@ -952,7 +965,8 @@ final class AppState: ObservableObject {
     /// 会话级中文探测的 UI 镜像（SessionController 是真相，这里只负责触发重绘）。
     ///
     /// 主窗口只观察 AppState，SessionController 的 @Published 不会让 SwiftUI 重绘，
-    /// 所以必须桥一层；用户点“仍要翻译”时直接置 false（随后启用翻译会让会话侧也清零）。
+    /// 所以必须桥一层。这个提示位只由会话侧探测置 true（只置位、不改开关），本对象不再
+    /// 自己清它：唯一会清零的是主开关 setTranslationEnabled(true)（关闭翻译不清）。
     @Published var chineseSuspected: Bool = false
 
     let stream: TextStreamStore

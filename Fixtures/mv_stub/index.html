@@ -200,9 +200,18 @@
     { id: 4, name: '守りの盾', description: '防御力を一時的に高める', iconIndex: 30, mpCost: 6, note: '' }
   ];
 
+  // params 与 dropItems 不是装饰：真工程 dataEnemies 一定有这两个字段，
+  // Game_Enemy.mhp() 读 params[0]，makeDropItems() 读 dropItems[].{kind,dataId,denominator}。
+  // 缺了它们，$gameTroop 的 expTotal/goldTotal/makeDropItems 即使实现正确也只能返回 0，
+  // 于是"结算真的发生了"这件事在夹具里永远观测不到。
+  // denominator: 1 → Math.random() * 1 < 1 恒成立，掉落是确定的（不引入随机性）。
   var dataEnemies = [null,
-    { id: 1, name: 'スライム', battlerName: 'Slime', exp: 12, gold: 20, note: '' },
-    { id: 2, name: '洞窟の蝙蝠', battlerName: 'Bat', exp: 18, gold: 35, note: '' }
+    { id: 1, name: 'スライム', battlerName: 'Slime', exp: 12, gold: 20,
+      params: [90, 0, 12, 4, 4, 4, 5, 5],
+      dropItems: [{ kind: 1, dataId: 1, denominator: 1 }], note: '' },
+    { id: 2, name: '洞窟の蝙蝠', battlerName: 'Bat', exp: 18, gold: 35,
+      params: [70, 0, 14, 3, 3, 3, 7, 6],
+      dropItems: [{ kind: 1, dataId: 2, denominator: 1 }], note: '' }
   ];
 
   var dataTroops = [null,
@@ -588,8 +597,174 @@
       if (index >= 0) { this._actors.splice(index, 1); }
       return true;
     },
-    hasActor: function (actorId) { return this._actors.indexOf(actorId) >= 0; }
+    hasActor: function (actorId) { return this._actors.indexOf(actorId) >= 0; },
+    // Game_Unit 的成员方法：BattleManager.checkBattleEnd 判负就靠它。
+    deadMembers: function () {
+      return this.members().filter(function (member) { return member.isDead(); });
+    },
+    aliveMembers: function () {
+      return this.members().filter(function (member) { return member.isAlive(); });
+    },
+    isAllDead: function () {
+      return this.members().length > 0 && this.aliveMembers().length === 0;
+    }
   };
+
+  // ---------- $gameTroop（Game_Troop + Game_Enemy）----------
+  //
+  // 为什么夹具必须有它：真实引擎里 `$gameTroop` 由 DataManager.createGameObjects 建好，
+  // 而且**整场游戏都非 null**。战斗的收尾结算（expTotal / goldTotal / makeDropItems）
+  // 全部走 Game_Troop；Agent 的 cheatBattle(win|killAll) 也是清 HP 后交给
+  // BattleManager.checkBattleEnd -> $gameTroop.isAllDead() 判胜。夹具里没有它，
+  // 任何"战斗是否真的结算"的断言都只能靠猜。
+  //
+  // 死亡语义按真引擎（MV rpg_objects.js / MZ rmmz_objects.js 的 Game_Battler）：
+  //   setHp(hp) → _hp = clamp(hp, 0, mhp) → refresh()
+  //   refresh() → hp === 0 ? addState(deathStateId()) : eraseState(deathStateId())
+  //   isDead()  → isStateAffected(deathStateId())      ← **不是** `_hp <= 0`
+  //   die()     → clearStates() + clearActions()        ← 清掉死亡状态，且不再 refresh()
+  // 最后两行正是 cheatBattle 的历史坑：先 setHp(0) 再 die()，尸体会 `_hp===0` 但没有
+  // 死亡状态 → deadMembers() 为空 → 经验/金钱/掉落全 0。夹具必须能复现这一点。
+  //
+  // 注意 deathStateId：真工程 dataStates[1] 是「戦闘不能」，本夹具把 1 给了「毒」、
+  // 2 才是「戦闘不能」，所以常量对齐夹具数据（语义与真引擎一致，只是 id 不同）。
+  var DEATH_STATE_ID = 2;
+
+  function Game_Enemy(enemyId, x, y) {
+    var def = dataEnemies[enemyId] || { id: enemyId, name: '名無し', exp: 0, gold: 0, params: [100], dropItems: [] };
+    this._enemyId = enemyId;
+    this._screenX = x | 0;
+    this._screenY = y | 0;
+    this._states = [];
+    this._actions = [];
+    this._hp = (def.params && def.params[0]) || 100;
+    this._mp = (def.params && def.params[1]) || 0;
+    this._tp = 0;
+  }
+  Game_Enemy.prototype.enemy = function () { return dataEnemies[this._enemyId]; };
+  Game_Enemy.prototype.enemyId = function () { return this._enemyId; };
+  Game_Enemy.prototype.index = function () { return gameTroop.members().indexOf(this); };
+  Game_Enemy.prototype.name = function () { return this.enemy().name; };
+  Game_Enemy.prototype.paramBase = function (paramId) {
+    var params = this.enemy().params || [];
+    return params[paramId] || 0;
+  };
+  Game_Enemy.prototype.param = function (paramId) { return this.paramBase(paramId); };
+  Game_Enemy.prototype.mhp = function () { return this.param(0); };
+  Game_Enemy.prototype.mmp = function () { return this.param(1); };
+  Game_Enemy.prototype.exp = function () { return this.enemy().exp || 0; };
+  Game_Enemy.prototype.gold = function () { return this.enemy().gold || 0; };
+  Game_Enemy.prototype.deathStateId = function () { return DEATH_STATE_ID; };
+  // 与 MV/MZ 的 Game_BattlerBase 同形（MV rpg_objects.js:2610 / MZ rmmz_objects.js:1421）。
+  // 缺了它，Agent 的三步（setHp → die → 补状态）里第三步无法判断"是否已被 clearStates 抹掉"，
+  // 夹具也就观测不到"只有补回状态才进 deadMembers"这条因果。
+  Game_Enemy.prototype.isDeathStateAffected = function () { return this.isStateAffected(this.deathStateId()); };
+  Game_Enemy.prototype.isStateAffected = function (stateId) { return this._states.indexOf(stateId) >= 0; };
+  Game_Enemy.prototype.states = function () { return this._states.slice(0); };
+  Game_Enemy.prototype.addState = function (stateId) {
+    if (!dataStates[stateId]) { return false; }
+    if (this._states.indexOf(stateId) < 0) { this._states.push(stateId); }
+    return true;
+  };
+  Game_Enemy.prototype.eraseState = function (stateId) {
+    var index = this._states.indexOf(stateId);
+    if (index >= 0) { this._states.splice(index, 1); }
+    return true;
+  };
+  Game_Enemy.prototype.clearStates = function () { this._states = []; };
+  Game_Enemy.prototype.clearActions = function () { this._actions = []; };
+  Game_Enemy.prototype.refresh = function () {
+    if (this.hp === 0) { this.addState(this.deathStateId()); }
+    else { this.eraseState(this.deathStateId()); }
+  };
+  Game_Enemy.prototype.setHp = function (hp) {
+    this._hp = Math.max(0, Math.min(hp | 0, this.mhp()));
+    this.refresh();
+    return true;
+  };
+  Game_Enemy.prototype.isDead = function () { return this.isStateAffected(this.deathStateId()); };
+  Game_Enemy.prototype.isAlive = function () { return !this.isDead(); };
+  Game_Enemy.prototype.die = function () { this.clearStates(); this.clearActions(); };
+  Game_Enemy.prototype.itemObject = function (kind, dataId) {
+    if (kind === 1) { return dataItems[dataId] || null; }
+    if (kind === 2) { return dataWeapons[dataId] || null; }
+    if (kind === 3) { return dataArmors[dataId] || null; }
+    return null;
+  };
+  Game_Enemy.prototype.makeDropItems = function () {
+    var drops = this.enemy().dropItems || [];
+    var out = [];
+    for (var i = 0; i < drops.length; i++) {
+      var drop = drops[i];
+      if (drop.kind > 0 && Math.random() * drop.denominator < 1) {
+        out.push(this.itemObject(drop.kind, drop.dataId));
+      }
+    }
+    return out;
+  };
+  // MZ 的 hp 是访问器（与 Game_Actor 的形态保持一致）。
+  Object.defineProperty(Game_Enemy.prototype, 'hp', {
+    get: function () { return this._hp; },
+    set: function (value) { this.setHp(value); },
+    configurable: true,
+    enumerable: false
+  });
+
+  var gameTroop = {
+    _troopId: 0,
+    _enemies: [],
+    _turnCount: 0,
+    _expTotal: 0,
+    _goldTotal: 0,
+    _interpreter: { isRunning: function () { return false; } },
+
+    troop: function () { return dataTroops[this._troopId] || { id: 0, name: '', members: [] }; },
+    clear: function () {
+      this._enemies = [];
+      this._turnCount = 0;
+      this._expTotal = 0;
+      this._goldTotal = 0;
+    },
+    setup: function (troopId) {
+      this.clear();
+      this._troopId = troopId | 0;
+      var members = this.troop().members || [];
+      this._enemies = [];
+      for (var i = 0; i < members.length; i++) {
+        if (!dataEnemies[members[i].enemyId]) { continue; }
+        this._enemies.push(new Game_Enemy(members[i].enemyId, members[i].x, members[i].y));
+      }
+      return true;
+    },
+    enemies: function () { return this._enemies; },
+    members: function () { return this._enemies; },
+    deadMembers: function () {
+      return this.members().filter(function (member) { return member.isDead(); });
+    },
+    aliveMembers: function () {
+      return this.members().filter(function (member) { return member.isAlive(); });
+    },
+    isAllDead: function () {
+      return this.members().length > 0 && this.aliveMembers().length === 0;
+    },
+    // 与 rmmz_objects.js 同构：收益只算 deadMembers，不是全部成员。
+    expTotal: function () {
+      return this.deadMembers().reduce(function (total, enemy) { return total + enemy.exp(); }, 0);
+    },
+    goldTotal: function () {
+      var raw = this.deadMembers().reduce(function (total, enemy) { return total + enemy.gold(); }, 0);
+      var rate = (gameParty && typeof gameParty.goldRate === 'function') ? gameParty.goldRate() : 1;
+      return Math.floor(Math.round(raw * rate));
+    },
+    makeDropItems: function () {
+      return this.deadMembers().reduce(function (items, enemy) {
+        return items.concat(enemy.makeDropItems());
+      }, []);
+    },
+    turnCount: function () { return this._turnCount; },
+    isEventRunning: function () { return false; }
+  };
+  gameTroop.setup(1);
 
   // ---------- $gamePlayer / $gameMap ----------
   var gamePlayer = {
@@ -755,6 +930,26 @@
     _canLose: false,
     _actionForcedBattler: null,
     processVictory: function () { this._phase = 'victory'; this._victory = true; return true; },
+    // 与 rmmz_managers.js 的 BattleManager.checkBattleEnd 同构：
+    //   1) checkAbort() → 直接结束；
+    //   2) 队伍全灭 → processDefeat()；
+    //   3) 敌群全灭 → processVictory()。
+    // 顺序不能反：队伍和敌群同时全灭时真引擎判负（Game Over 优先）。
+    checkAbort: function () { return false; },
+    checkBattleEnd: function () {
+      if (this._phase) {
+        if (this.checkAbort()) {
+          return true;
+        } else if (gameParty.isAllDead()) {
+          this.processDefeat();
+          return true;
+        } else if (gameTroop.isAllDead()) {
+          this.processVictory();
+          return true;
+        }
+      }
+      return false;
+    },
     processEscape: function () { this._phase = 'escape'; this._escaped = true; return true; },
     processDefeat: function () { this._phase = 'defeat'; this._defeated = true; return true; },
     battleMembers: function () { return gameParty.allMembers(); },
@@ -922,6 +1117,9 @@
   // `Game_Actor` 在 MV/MZ 里是**全局类**（`window.Game_Actor`），插件与作弊 hook 都认这个全局
   // （例如 Agent 的 godMode 包装 `Game_Actor.prototype.setHp`）。夹具必须同形导出。
   window.Game_Actor = Game_Actor;
+  // 与真引擎同形：Game_Enemy 是全局类，$gameTroop 在全生命周期内都非 null。
+  window.Game_Enemy = Game_Enemy;
+  window.$gameTroop = gameTroop;
   window.$gameVariables = gameVariables;
   window.$gameSwitches = gameSwitches;
   window.$gameSelfSwitches = gameSelfSwitches;

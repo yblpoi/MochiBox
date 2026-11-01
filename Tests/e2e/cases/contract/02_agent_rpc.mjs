@@ -113,9 +113,77 @@ runCase('agent-rpc', async (tap) => {
   okAck(h.rpc('cheat.scenePop'), 'R-38 scenePop');
   tap.eq(run('window.SceneManager._scene.constructor.name'), 'Scene_Map', 'R-39 scenePop 回到 Scene_Map');
 
+  // 结算语义的观测点：必须在 rpc 之前装。
+  //   · check / victory：证明"结束"是引擎的 checkBattleEnd 判的（它内部调一次 processVictory），
+  //     Agent 不该在 ended===true 之后再补一次 processVictory —— 那会把经验/金钱发两遍。
+  //   · die：作弊路径的三步是 setHp(0) → die() → 补死亡状态（见 killEnemyMember）。
+  //     die() 必须真的被调一次：插件把掉落 / 伤害转金币 / 战利品结算挂在 die() 上，
+  //     setHp(0) 的 refresh 不会触发它们（exp 走 expTotal 不受影响，表现为"经验正常、钱为 0"）。
+  //     但 die() 的 clearStates() 会抹掉死亡状态，所以第三步必须把它补回来 ——
+  //     只 setHp 不 die 与只 die 不补状态，都会让 _hp===0 的尸体进不了 deadMembers()，
+  //     expTotal/goldTotal/makeDropItems 归零。
+  //   · diePerEnemy / deadAfterDie：按敌人记录 die 次数，以及 die() 返回那一刻是否还带死亡状态
+  //     （MZ 语义下必为 false，因为 Game_BattlerBase.die 不调 refresh）。
+  run('(function () {' +
+    'window.__battleSpy = { check: 0, victory: 0, defeat: 0, die: 0, diePerEnemy: [], deadAfterDie: [] };' +
+    'var BM = window.BattleManager;' +
+    'var checkBattleEnd = BM.checkBattleEnd;' +
+    'var processVictory = BM.processVictory;' +
+    'BM.checkBattleEnd = function () { window.__battleSpy.check += 1; return checkBattleEnd.apply(this, arguments); };' +
+    'BM.processVictory = function () { window.__battleSpy.victory += 1; return processVictory.apply(this, arguments); };' +
+    'window.$gameTroop.members().forEach(function (enemy, i) {' +
+      'window.__battleSpy.diePerEnemy[i] = 0;' +
+      'window.__battleSpy.deadAfterDie[i] = null;' +
+      'var die = enemy.die;' +
+      'enemy.die = function () {' +
+        'window.__battleSpy.die += 1;' +
+        'window.__battleSpy.diePerEnemy[i] += 1;' +
+        'var out = die.apply(this, arguments);' +
+        'window.__battleSpy.deadAfterDie[i] = enemy.isDeathStateAffected();' +
+        'return out;' +
+      '};' +
+    '});' +
+  '})()');
+
   okAck(h.rpc('cheat.battle', { op: 'win' }), 'R-40 battle win');
   tap.ok(run('window.BattleManager._phase === "victory" || window.BattleManager._victory === true'),
     'R-41 BattleManager 进入胜利态');
+  tap.eq(run('window.$gameTroop.isAllDead()'), true, 'R-41b 敌群真的全灭了（isDead 由死亡状态判定，不是只看 _hp）');
+  tap.ok(run('window.$gameTroop.expTotal()') > 0 && run('window.$gameTroop.goldTotal()') > 0,
+    'R-41c 胜利结算有收益：expTotal 与 goldTotal 都非 0',
+    'exp=' + run('window.$gameTroop.expTotal()') + ' gold=' + run('window.$gameTroop.goldTotal()'));
+  tap.ok(run('window.$gameTroop.makeDropItems().length') > 0,
+    'R-41d makeDropItems 按 deadMembers 产出掉落（非空）',
+    'drops=' + run('JSON.stringify(window.$gameTroop.makeDropItems())'));
+  tap.eq(run('window.__battleSpy.check'), 1, 'R-41e 结束判定只走一次 checkBattleEnd');
+  tap.eq(run('window.__battleSpy.victory'), 1,
+    'R-41f processVictory 只被调用一次（checkBattleEnd 已判胜，Agent 不再补刀，收益不会发两遍）');
+  // R-41g：die 次数按敌人断言（不写死敌群大小，期望值由 members() 现场推出）。
+  // 恰好一次：少了 die() 插件挂在上面的结算不触发；多了说明同一场战斗被重复处理。
+  const troopSize = run('window.$gameTroop.members().length');
+  const expectedDies = JSON.stringify(Array.from({ length: troopSize }, () => 1));
+  const diePerEnemy = run('JSON.stringify(window.__battleSpy.diePerEnemy)');
+  tap.eq(diePerEnemy, expectedDies,
+    'R-41g die() 对每个敌人恰好调用一次（插件挂在 die 上的结算才会触发）',
+    'diePerEnemy=' + diePerEnemy + ' total=' + run('window.__battleSpy.die'));
+
+  // R-41h：死亡状态确实是"补"回来的 —— die() 返回那一刻它已被 clearStates 抹掉，
+  // 所以三步的顺序只能是 setHp → die → addState，反过来会被清掉。
+  const deadAfterDie = run('JSON.stringify(window.__battleSpy.deadAfterDie)');
+  tap.eq(deadAfterDie, JSON.stringify(Array.from({ length: troopSize }, () => false)),
+    'R-41h die() 返回时死亡状态已被 clearStates 抹掉（第三步必须存在的原因）',
+    'deadAfterDie=' + deadAfterDie);
+
+  // R-41i：三步走完后每个敌人都重新带上死亡状态（补回成功）。
+  tap.ok(
+    run('window.$gameTroop.members().every(function (e) {' +
+      'return e.isDeathStateAffected() && e.isDead(); })'),
+    'R-41i 三步之后每个敌人都重新带上死亡状态（isDeathStateAffected / isDead 都为真）');
+
+  // R-41j：deadMembers 非空且覆盖全部敌人 —— 它是 expTotal/goldTotal/makeDropItems 的唯一求和基础。
+  tap.eq(run('window.$gameTroop.deadMembers().length'), troopSize,
+    'R-41j deadMembers 非空且覆盖全部敌人',
+    'dead=' + run('window.$gameTroop.deadMembers().length') + ' members=' + troopSize);
 
   // ---- objectPath / setObjectPath / 安全边界 ----
   const read = h.rpc('cheat.objectPath', { path: '$gameParty._gold' }).ack;

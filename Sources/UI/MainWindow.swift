@@ -408,58 +408,51 @@ struct MainWindow: View {
                     app.clearStream()
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                // 一个真相：全局 settings.agentEnabled（落盘见 AppState.setTranslationEnabled）。
-                // 不做 per-game 字段：同一个开关换了游戏仍是同一个问题“这游戏要不要翻译”。
-                Button(app.settings.agentEnabled ? "关闭翻译" : "开启翻译") {
-                    app.setTranslationEnabled(!app.settings.agentEnabled)
-                }
-                .controlSize(.small)
+                // 控件行右端一整组：第一行是「翻译开关 + 字号 + 滑杆 + 百分比」，开关
+                // 回到控件行的老位置（Spacer 之后、字号之前），和启动/停止/重连/清空
+                // 文本流同一行；第二行是开关的说明，贴在第一行正下方。
+                // VStack 用 .leading 对齐 —— 说明的左边缘天然就是第一行 HStack 的左边缘，
+                // 也就是按钮的左边缘，不需要额外量宽度。
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        translationToggleButton
 
-                Text("字号")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Slider(value: $app.fontScaleDraft, in: 0.8...1.3, step: 0.05) { editing in
-                    isFontSliderEditing = editing
-                    if editing {
-                        // 开始拖动：作废上一轮还没落地的 debounce。
-                        fontScaleCommitTask?.cancel()
-                        fontScaleCommitTask = nil
-                    } else {
-                        commitFontScale()
+                        Text("字号")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Slider(value: $app.fontScaleDraft, in: 0.8...1.3, step: 0.05) { editing in
+                            isFontSliderEditing = editing
+                            if editing {
+                                // 开始拖动：作废上一轮还没落地的 debounce。
+                                fontScaleCommitTask?.cancel()
+                                fontScaleCommitTask = nil
+                            } else {
+                                commitFontScale()
+                            }
+                        }
+                        .frame(width: 110)
+                        .onChange(of: app.fontScaleDraft) { _ in
+                            // 拖动中一律不提交（松手由 onEditingChanged 负责）；其余来源
+                            // （⌘+ / ⌘-）走 280ms debounce，连按只发最后一次。
+                            guard !isFontSliderEditing else { return }
+                            scheduleFontScaleCommit()
+                        }
+                        Text(String(format: "%.0f%%", app.fontScaleDraft * 100))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .frame(width: 40, alignment: .leading)
                     }
-                }
-                .frame(width: 110)
-                .onChange(of: app.fontScaleDraft) { _ in
-                    // 拖动中一律不提交（松手由 onEditingChanged 负责）；其余来源
-                    // （⌘+ / ⌘-）走 280ms debounce，连按只发最后一次。
-                    guard !isFontSliderEditing else { return }
-                    scheduleFontScaleCommit()
-                }
-                Text(String(format: "%.0f%%", app.fontScaleDraft * 100))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .frame(width: 40, alignment: .leading)
-            }
+                    // 这一行按固有宽度渲染：按钮、字号、110pt 滑杆、40pt 百分比
+                    // 都不会被外层挤压或压缩，说明要换行也只会压到自己身上。
+                    .fixedSize(horizontal: true, vertical: false)
 
-            // 开关的说明单独占一行：controls 那一行还有字号滑杆，
-            // 塞进去在 620pt 的右栏里会把滑杆挤没。
-            Text("游戏自带中文时点这里，游戏内保留原文")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-
-            if app.chineseSuspected {
-                HStack(spacing: 8) {
-                    Text("检测到游戏文本已是中文，已自动跳过翻译")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                    Button("仍要翻译") {
-                        app.chineseSuspected = false
-                        app.setTranslationEnabled(true)
-                    }
-                    .controlSize(.small)
+                    translationToggleNotes
                 }
+                // 优先级高于同一行的 Spacer：先按这一组自身的宽度分配空间，
+                // 说明才会在这一组的宽度内换行，而不是被 Spacer 挤成窄条。
+                .layoutPriority(1)
             }
 
             if !app.notice.isEmpty {
@@ -469,6 +462,62 @@ struct MainWindow: View {
             }
         }
         .padding(12)
+    }
+
+    // MARK: 翻译开关 + 说明
+
+    /// 开关按钮的状态色：已开启（按钮显示「关闭翻译」）用红，已关闭（显示「开启翻译」）用绿。
+    /// 直接给 label 上色 —— 有边框的 macOS 按钮会用自身强调色盖掉 label 前景色，
+    /// 所以这里用 .plain 自绘胶囊，文字颜色与可点区都由自己做主。
+    private var translationToggleTint: Color {
+        app.settings.agentEnabled ? .red : .green
+    }
+
+    /// 开关按钮本体。行为仍是 setTranslationEnabled(!agentEnabled)，全仓只有一个翻译开关。
+    private var translationToggleButton: some View {
+        // 一个真相：全局 settings.agentEnabled（落盘见 AppState.setTranslationEnabled）。
+        // 不做 per-game 字段：同一个开关换了游戏仍是同一个问题“这游戏要不要翻译”。
+        Button {
+            app.setTranslationEnabled(!app.settings.agentEnabled)
+        } label: {
+            Text(app.settings.agentEnabled ? "关闭翻译" : "开启翻译")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(translationToggleTint)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(translationToggleTint.opacity(0.12))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(translationToggleTint.opacity(0.45), lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        // .plain 才有机会用 label 自己的前景色，默认按钮样式会用系统强调色盖掉。
+        .buttonStyle(.plain)
+        .help("开启后按行翻译并回填游戏内；已是中文的句子会按跳过规则自动跳过")
+    }
+
+    /// 开关的说明：在按钮的下一行。左边缘与按钮左边缘对齐由外层 .leading VStack 保证，
+    /// 这里只负责换行（fixedSize 垂直方向自适应），不设宽度上限，避免被逼成窄条。
+    private var translationToggleNotes: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(app.settings.agentEnabled ? "翻译已开启：译文回填到游戏内" : "翻译已关闭：游戏内直接显示原文")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if app.chineseSuspected {
+                Text("检测到游戏文本已是中文（前 100 行假名占比低于 2%），含中文的句子会跳过翻译")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: 文本流

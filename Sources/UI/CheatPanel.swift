@@ -11,7 +11,7 @@
 //  两条硬约束（都在这里落地）：
 //    1. 顶部快照 **1 s 刷新只在页面可见时跑**：`.onAppear` 起 `.onDisappear` 停，
 //       切回翻译流 / 关窗都不留定时器；
-//    2. 危险操作（全开关、强制战败、任意对象写入）走本文件统一的二次确认 alert，
+//    2. 危险操作（全开关、战斗操作、任意对象写入）走本文件统一的二次确认 alert，
 //       具体页面只调 `onDanger`，不自己弹窗。
 //
 
@@ -49,13 +49,13 @@ enum CheatSection: String, CaseIterable, Identifiable {
 /// 需要二次确认的动作。确认文案由这里给出，避免各页面各写一套。
 enum CheatDanger: Identifiable {
     case allSwitches(Bool)
-    case battleLose
+    case battle(CheatBattleOp)
     case objectWrite(path: String, value: JSONValue)
 
     var id: String {
         switch self {
         case .allSwitches(let on): return "all-switches-\(on)"
-        case .battleLose: return "battle-lose"
+        case .battle(let op): return "battle-\(op.rawValue)"
         case .objectWrite(let path, _): return "write-\(path)"
         }
     }
@@ -63,7 +63,13 @@ enum CheatDanger: Identifiable {
     var title: String {
         switch self {
         case .allSwitches: return "切换全部开关？"
-        case .battleLose: return "强制战败？"
+        case .battle(let op):
+            switch op {
+            case .win: return "确认战斗胜利？"
+            case .killAll: return "确认秒杀敌群？"
+            case .escape: return "确认逃跑？"
+            case .lose: return "强制战败？"
+            }
         case .objectWrite: return "写入游戏对象？"
         }
     }
@@ -74,8 +80,17 @@ enum CheatDanger: Identifiable {
             return on
                 ? "会把数据里所有开关置为 ON。剧情进度、事件页判定都会同时改变，通常无法逐条还原。"
                 : "会把数据里所有开关置为 OFF。剧情进度、事件页判定都会同时改变。"
-        case .battleLose:
-            return "会把队伍 HP 压到 1 后判负。如果游戏没有战斗场景，可能直接进入 Game Over。"
+        case .battle(let op):
+            switch op {
+            case .win:
+                return "会立即击杀全部敌人，并按正常战斗结算发放经验、金钱与掉落物。"
+            case .killAll:
+                return "会立即击杀全部敌人。战斗由引擎判定结束，收益照常结算。"
+            case .escape:
+                return "会立即结束当前战斗并撤离，不影响已经到手的奖励。"
+            case .lose:
+                return "会把队伍 HP 压到 1 后判负。如果游戏没有战斗场景，可能直接进入 Game Over。"
+            }
         case .objectWrite(let path, let value):
             return "路径：\(path)\n值：\(value.cheatDisplayText)\n\n直接改运行时对象的字段，可能破坏存档/事件状态。"
         }
@@ -84,7 +99,13 @@ enum CheatDanger: Identifiable {
     var confirmLabel: String {
         switch self {
         case .allSwitches: return "全部切换"
-        case .battleLose: return "判负"
+        case .battle(let op):
+            switch op {
+            case .win: return "胜利"
+            case .killAll: return "秒杀"
+            case .escape: return "逃跑"
+            case .lose: return "判负"
+            }
         case .objectWrite: return "写入"
         }
     }
@@ -198,8 +219,8 @@ struct CheatPanel: View {
             switch item {
             case .allSwitches(let on):
                 await controller.setAllSwitches(on: on)
-            case .battleLose:
-                await controller.battle(.lose)
+            case .battle(let op):
+                await controller.battle(op)
             case .objectWrite(let path, let value):
                 await controller.writeObjectPath(path, value: value)
             }

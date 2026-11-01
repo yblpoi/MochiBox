@@ -34,6 +34,16 @@ final class TextStreamStore: ObservableObject {
     /// 每次都把整张表重写一遍 —— 满窗口（5000 行）时每次追加都退化成 O(n) 全表重建。
     /// 绝对下标只增不减，淘汰时只需处理**被淘汰行自己**的条目，追加时 O(1) 插入。
     private var lastRowIndexByIdentity: [String: Int] = [:]
+    /// 翻译身份（`cacheKey`）→ 该身份所有行的**绝对下标**（升序）。
+    ///
+    /// 扇出（`applyTranslation` / `applySkip` / `applyError` / `markPending`）以前是
+    /// `rows.indices.filter { rows[$0].key == cacheKey }`：满窗口（5000 行）时**每次**都要
+    /// 遍历全表比 5000 次字符串。实测每条译文 2.3ms，一批 60 条就把主线程按 140ms ——
+    /// 表现为"玩一段时间（文本流攒满）后开始卡"。索引把扇出降到 O(同 key 的行数)。
+    ///
+    /// 与 `lastRowIndexByIdentity` 一样存**绝对下标**：淘汰从头部整段 `removeFirst` 时，
+    /// 保留行的绝对下标不变，只需删掉被淘汰行自己的条目。
+    private var absoluteIndicesByCacheKey: [String: [Int]] = [:]
     /// 已从头部淘汰的行数 = `rows[0]` 的绝对下标。
     ///
     /// 绝对下标 − 本值 = `rows` 的相对下标。`clear()` 时归零（两者一起清空）。
@@ -243,7 +253,9 @@ final class TextStreamStore: ObservableObject {
         // 先写会被它删掉（新行的 occurrences 明明是 count，下一次却从 1 重来）。
         occurrencesByIdentity[identity] = count
         // + 淘汰基数：索引表存的是绝对下标，不能让 `removeFirst` 把它整体拽偏。
-        lastRowIndexByIdentity[identity] = evictedRowCount + rows.count - 1
+        let absoluteIndex = evictedRowCount + rows.count - 1
+        lastRowIndexByIdentity[identity] = absoluteIndex
+        absoluteIndicesByCacheKey[translationKey, default: []].append(absoluteIndex)
         stats.total += 1
         // 新行永远是最后一行（淘汰只从头部进行），返回它即可。
         return rows[rows.count - 1]
@@ -261,7 +273,15 @@ final class TextStreamStore: ObservableObject {
     /// 译文 / 错误 / 降级 / 失效**一律按 `cacheKey` 扇出**（`350` 与 `\C[2]350` 共享同一个
     /// `cacheKey`，一条结果必须同时填两行，否则另一行永久 `pending`，撞 AC2.2b）。
     func rowsSharingCacheKey(_ cacheKey: String) -> [Int] {
-        return rows.indices.filter { rows[$0].key == cacheKey }
+        guard let absolutes = absoluteIndicesByCacheKey[cacheKey] else { return [] }
+        var output: [Int] = []
+        output.reserveCapacity(absolutes.count)
+        for absolute in absolutes {
+            let index = absolute - evictedRowCount
+            guard index >= 0, index < rows.count, rows[index].key == cacheKey else { continue }
+            output.append(index)
+        }
+        return output
     }
 
     /// 跳过（纯数字 / 纯符号 / 过短 / 已暂停）：不进管线。
@@ -269,15 +289,34 @@ final class TextStreamStore: ObservableObject {
     /// 参数是**翻译身份**（`cacheKey`）：同一句的多种画法（`350` / `\C[2]350`）共享它，
     /// 所以这里会扇出标记**所有**这些行；`stats.skipped` 只 +1（一次判定，不是一次计费）。
     func applySkip(cacheKey: String, reason: String) {
-        var touched = false
-        for index in rowsSharingCacheKey(cacheKey) {
-            rows[index].status = (reason == "disabled") ? .paused : .skipped
-            rows[index].skipReason = reason
-            touched = true
+        let indices = rowsSharingCacheKey(cacheKey)
+        guard !indices.isEmpty else { return }
+        let target: TextStatus = (reason == "disabled") ? .paused : .skipped
+        // 先改本地副本、最后一次赋值：`rows` 是 `@Published`，逐个元素写会触发
+        // 每次一整表 COW 拷贝 + 一次发布；同一次扇出合成一次（见 `rowsSharingCacheKey` 注释）。
+        var buffer = rows
+        var changed = false
+        for index in indices {
+            guard buffer[index].status != target || buffer[index].skipReason != reason else { continue }
+            buffer[index].status = target
+            buffer[index].skipReason = reason
+            changed = true
         }
-        if touched {
-            stats.skipped += 1
-        }
+        if changed { rows = buffer }
+        stats.skipped += 1
+    }
+
+    /// 一批译文结果的最小描述（applyTranslations 的入参）。
+    ///
+    /// 单条结果也走批量入口：@Published 的 getter 会让每次 rows[i].field = … 触发一次
+    /// 整表 COW，60 条结果就是 60 次 5000 行拷贝（实测 13ms）。
+    struct TranslationUpdate {
+        var cacheKey: String
+        var translatedRaw: String?
+        var segments: [Segment]?
+        var backend: BackendKind
+        var latencyMs: Int?
+        var cached: Bool
     }
 
     /// 写入译文。
@@ -304,54 +343,95 @@ final class TextStreamStore: ObservableObject {
         latencyMs: Int?,
         cached: Bool
     ) {
-        var touched = false
-        // 空数组等价于"没给"：与 Agent 侧 `hasSegments = segments.length > 0` 同一判据。
-        var translatedTexts: [String]?
-        if let segments = segments, !segments.isEmpty {
-            translatedTexts = Segmenter.translatedTextPieces(segments)
-        }
-        for index in rowsSharingCacheKey(cacheKey) {
-            if backend == .passthrough {
-                rows[index].translated = nil
-                rows[index].translatedSegments = nil
-                rows[index].status = .passthrough
-            } else if let texts = translatedTexts {
-                // 本行自己的骨架：`rows[index].segments` 来自该行的 Agent 上报，
-                // 不能重新 `splitSegments(raw)` 代替（两侧分段器的细微差异会算错段数）。
-                let skeleton = rows[index].segments
-                if let merged = Segmenter.mergeBySkeleton(skeleton: skeleton, translatedTexts: texts) {
-                    rows[index].translated = merged
-                    rows[index].translatedSegments = Segmenter.mergeSegments(skeleton: skeleton, translatedTexts: texts)
-                    rows[index].status = cached ? .hit : .translated
-                    rows[index].error = nil
+        applyTranslations([TranslationUpdate(
+            cacheKey: cacheKey,
+            translatedRaw: translatedRaw,
+            segments: segments,
+            backend: backend,
+            latencyMs: latencyMs,
+            cached: cached
+        )])
+    }
+
+    /// 一次写入一批译文结果：整批只做**一次**整表拷贝 + 一次 @Published 发布。
+    ///
+    /// 目标值与行现状完全相同时跳过写入：同一句在长会话里会被反复重绘（delivered 命中
+    /// 路径），每次都白拷 5000 行正是"玩一段时间后开始卡"的来源之一。
+    func applyTranslations(_ updates: [TranslationUpdate]) {
+        guard !updates.isEmpty else { return }
+        var buffer = rows
+        var changed = false
+        var hits = 0
+        var fresh = 0
+        for update in updates {
+            let indices = rowsSharingCacheKey(update.cacheKey)
+            guard !indices.isEmpty else { continue }
+            // 空数组等价于"没给"：与 Agent 侧 hasSegments = segments.length > 0 同一判据。
+            var translatedTexts: [String]?
+            if let segments = update.segments, !segments.isEmpty {
+                translatedTexts = Segmenter.translatedTextPieces(segments)
+            }
+            for index in indices {
+                let row = buffer[index]
+                let targetTranslated: String?
+                let targetSegments: [Segment]?
+                let targetStatus: TextStatus
+                let targetError: ErrorInfo?
+                if update.backend == .passthrough {
+                    targetTranslated = nil
+                    targetSegments = nil
+                    targetStatus = .passthrough
+                    targetError = nil
+                } else if let texts = translatedTexts {
+                    // 本行自己的骨架：row.segments 来自该行的 Agent 上报，
+                    // 不能重新 splitSegments(raw) 代替（两侧分段器的细微差异会算错段数）。
+                    let skeleton = row.segments
+                    if let merged = Segmenter.mergeBySkeleton(skeleton: skeleton, translatedTexts: texts) {
+                        targetTranslated = merged
+                        targetSegments = Segmenter.mergeSegments(skeleton: skeleton, translatedTexts: texts)
+                        targetStatus = update.cached ? .hit : .translated
+                        targetError = nil
+                    } else {
+                        // 有译文但本行骨架对不上（病态数据）：绝不重放先到那一行的码值。
+                        targetTranslated = nil
+                        targetSegments = nil
+                        targetStatus = .error
+                        targetError = ErrorInfo(code: .segmentMismatch)
+                    }
                 } else {
-                    // 有译文但本行骨架对不上（病态数据）：绝不重放先到那一行的码值。
-                    rows[index].translated = nil
-                    rows[index].translatedSegments = nil
-                    rows[index].status = .error
-                    rows[index].error = ErrorInfo(code: .segmentMismatch)
+                    // 无段证据的兼容路径（v0.2 行为）：整串回退，此时没有骨架可比。
+                    targetTranslated = update.translatedRaw
+                    targetSegments = nil
+                    targetStatus = update.cached ? .hit : .translated
+                    targetError = nil
                 }
-            } else {
-                // 无段证据的兼容路径（v0.2 行为）：整串回退，此时没有骨架可比。
-                rows[index].translated = translatedRaw
-                rows[index].translatedSegments = nil
-                rows[index].status = cached ? .hit : .translated
-                rows[index].error = nil
+                guard row.translated != targetTranslated
+                    || row.translatedSegments != targetSegments
+                    || row.status != targetStatus
+                    || row.error != targetError
+                    || row.backend != update.backend
+                    || row.latencyMs != update.latencyMs
+                    || row.cached != update.cached else { continue }
+                buffer[index].translated = targetTranslated
+                buffer[index].translatedSegments = targetSegments
+                buffer[index].status = targetStatus
+                buffer[index].error = targetError
+                buffer[index].backend = update.backend
+                buffer[index].latencyMs = update.latencyMs
+                buffer[index].cached = update.cached
+                changed = true
             }
-            rows[index].backend = backend
-            rows[index].latencyMs = latencyMs
-            rows[index].cached = cached
-            touched = true
-        }
-        if touched {
-            if backend == .passthrough {
+            if update.backend == .passthrough {
                 // 直通不计入命中率分母（PRD AC3.1：分母不含 skipped / passthrough）。
-            } else if cached {
-                stats.hits += 1
+            } else if update.cached {
+                hits += 1
             } else {
-                stats.fresh += 1
+                fresh += 1
             }
         }
+        if changed { rows = buffer }
+        stats.hits += hits
+        stats.fresh += fresh
     }
 
     /// 写入错误（401/429/超时/段数不匹配）。
@@ -359,24 +439,32 @@ final class TextStreamStore: ObservableObject {
     /// **同样必须扇出**：只更新一行时，用户看到"一行报错、另一行永远转圈"——
     /// 症状与"后端慢"无法区分。错误路径的测试通常只放一条样本，天然测不出扇出。
     func applyError(cacheKey: String, error: ErrorInfo) {
-        var touched = false
-        for index in rowsSharingCacheKey(cacheKey) {
-            rows[index].status = .error
-            rows[index].error = error
-            touched = true
+        let indices = rowsSharingCacheKey(cacheKey)
+        guard !indices.isEmpty else { return }
+        var buffer = rows
+        var changed = false
+        for index in indices {
+            guard buffer[index].status != .error || buffer[index].error != error else { continue }
+            buffer[index].status = .error
+            buffer[index].error = error
+            changed = true
         }
-        if touched {
-            stats.errors += 1
-        }
+        if changed { rows = buffer }
+        stats.errors += 1
     }
 
     func markPending(cacheKey: String) {
-        for index in rowsSharingCacheKey(cacheKey) {
-            if rows[index].status == .pending { continue }
-            if rows[index].translated == nil {
-                rows[index].status = .pending
-            }
+        let indices = rowsSharingCacheKey(cacheKey)
+        guard !indices.isEmpty else { return }
+        var buffer = rows
+        var changed = false
+        for index in indices {
+            if buffer[index].status == .pending { continue }
+            guard buffer[index].translated == nil else { continue }
+            buffer[index].status = .pending
+            changed = true
         }
+        if changed { rows = buffer }
     }
 
     // MARK: - 开关与清理
@@ -384,9 +472,13 @@ final class TextStreamStore: ObservableObject {
     func setPaused(_ value: Bool) {
         paused = value
         guard value else { return }
-        for index in rows.indices where rows[index].status == .pending {
-            rows[index].status = .paused
+        var buffer = rows
+        var changed = false
+        for index in buffer.indices where buffer[index].status == .pending {
+            buffer[index].status = .paused
+            changed = true
         }
+        if changed { rows = buffer }
     }
 
     /// 只清视图，清缓存不在此处。
@@ -398,6 +490,7 @@ final class TextStreamStore: ObservableObject {
         stats = StreamStats()
         occurrencesByIdentity.removeAll()
         lastRowIndexByIdentity.removeAll()
+        absoluteIndicesByCacheKey.removeAll()
         evictedRowCount = 0
         lastRawSignature = ""
         orderCounter = 0
@@ -438,6 +531,20 @@ final class TextStreamStore: ObservableObject {
             let row = rows[index]
             let identity = TextStreamStore.rowIdentity(surface: row.surface, raw: row.raw)
             let absolute = evictedRowCount + index
+            // 翻译身份的索引**每一行都要清**：同 key 的多行是各自独立的下标，
+            // 不能等"该身份最后一行"才处理（那条判据只适用于行身份）。
+            if var bucket = absoluteIndicesByCacheKey[row.key] {
+                if bucket.first == absolute {
+                    bucket.removeFirst()
+                } else {
+                    bucket.removeAll { $0 == absolute }
+                }
+                if bucket.isEmpty {
+                    absoluteIndicesByCacheKey[row.key] = nil
+                } else {
+                    absoluteIndicesByCacheKey[row.key] = bucket
+                }
+            }
             // 该身份还有更靠后的保留行 → 这条只是"旧的一次出现"，索引与计数都要留着。
             guard lastRowIndexByIdentity[identity] == absolute else { continue }
             lastRowIndexByIdentity[identity] = nil

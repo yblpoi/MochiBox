@@ -374,6 +374,17 @@ enum GlossaryKey {
 final class GlossaryBox: @unchecked Sendable {
     private let lock = NSLock()
     private var value = Glossary()
+    /// 单文本术语匹配的缓存：`includeSingleChar + U+0000 + text` → 命中对。
+    ///
+    /// 实时链路**每个文本事件**都要算一次 profile（`handleText` 在查 `delivered` 之前），
+    /// 而 `Glossary.terms(in:)` 会遍历整张术语表并把每条 source 做一次 NFKC 归一化。
+    /// 788 条术语实测 1.8ms/次 —— 同一句在长会话里会被重绘成百上千次，每次都重扫一遍
+    /// 是纯浪费，且会随术语表变大而线性变慢。缓存后重复行只花一次字典查找。
+    ///
+    /// 只在 `update` 时整体失效：除此之外术语表不可变，缓存结果与实时计算逐字相同。
+    private var pairsCache: [String: [GlossaryPair]] = [:]
+    private var pairsOrder: [String] = []
+    private let pairsCacheLimit = 2048
 
     func snapshot() -> Glossary {
         lock.lock()
@@ -381,9 +392,35 @@ final class GlossaryBox: @unchecked Sendable {
         return value
     }
 
+    /// 单文本的术语对（与 `snapshot().pairs(in: [text], includeSingleChar:)` 同义）。
+    func pairs(in text: String, includeSingleChar: Bool) -> [GlossaryPair] {
+        let key = (includeSingleChar ? "1" : "0") + "\u{0000}" + text
+        lock.lock()
+        if let cached = pairsCache[key] {
+            lock.unlock()
+            return cached
+        }
+        let computed = value.pairs(in: [text], includeSingleChar: includeSingleChar)
+        if pairsCache.count >= pairsCacheLimit {
+            // 按插入序成批淘汰 1/4：逐条 LRU 的簿记成本比一次匹配还高。
+            let evict = max(1, pairsCacheLimit / 4)
+            for old in pairsOrder.prefix(evict) {
+                pairsCache.removeValue(forKey: old)
+            }
+            pairsOrder.removeFirst(min(evict, pairsOrder.count))
+        }
+        pairsCache[key] = computed
+        pairsOrder.append(key)
+        lock.unlock()
+        return computed
+    }
+
     func update(_ glossary: Glossary) {
         lock.lock()
         value = glossary
+        // 快照变了，旧匹配结果全部作废（否则用户改术语后仍在用旧提示）。
+        pairsCache.removeAll(keepingCapacity: true)
+        pairsOrder.removeAll(keepingCapacity: true)
         lock.unlock()
     }
 }

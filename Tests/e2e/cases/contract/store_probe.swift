@@ -435,6 +435,46 @@ struct StoreProbe {
                   "translated=\(String(describing: store.rows[0].translated))")
         }
 
+        // ---- S10：扇出索引必须跟着淘汰走（同 cacheKey 的多行被部分/全部淘汰） ----
+        //
+        // 回归点：扇出从"全表 filter"改成 cacheKey → 绝对下标 的索引后，淘汰若漏清
+        // 某一行的下标，applyTranslation 会把译文写到**已被淘汰的位置**（或让
+        // rowsSharingCacheKey 返回越界/串行下标）。这里用 maxRows=3 强制两轮淘汰：
+        //   ① 共享 key 的旧行被淘汰 → 只应命中保留的那一行；
+        //   ② 共享 key 的最后一行也被淘汰 → 索引必须为空，不得指向后来的 filler。
+        do {
+            let store = TextStreamStore(maxRows: 3)
+            ingest(store, raw: "\\N[1]共有",
+                   segments: [Segment(kind: .code, value: "\\N[1]"), Segment(kind: .text, value: "共有")],
+                   cacheKey: "shared", frame: 90, ts: 90_000)
+            ingest(store, raw: "\\N[2]共有",
+                   segments: [Segment(kind: .code, value: "\\N[2]"), Segment(kind: .text, value: "共有")],
+                   cacheKey: "shared", frame: 90, ts: 90_000)
+            ingest(store, raw: "filler-1", cacheKey: "f1", frame: 91, ts: 91_000)
+            ingest(store, raw: "filler-2", cacheKey: "f2", frame: 92, ts: 92_000)
+            let indices = store.rowsSharingCacheKey("shared")
+            check("S10a", "共享 cacheKey 的旧行被淘汰后，扇出只剩保留的那一行",
+                  indices.count == 1 && store.rows[indices[0]].raw == "\\N[2]共有",
+                  "indices=\(indices) rows=\(store.rows.map { $0.raw })")
+            store.applyTranslation(
+                cacheKey: "shared",
+                translatedRaw: "\\N[2]你好",
+                segments: [Segment(kind: .code, value: "\\N[2]"), Segment(kind: .text, value: "你好")],
+                backend: .openai,
+                latencyMs: 1,
+                cached: false
+            )
+            check("S10b", "译文只写到保留行（不得写到被淘汰的位置）",
+                  store.rows.count == 3
+                      && store.rows[indices[0]].translated == "\\N[2]你好"
+                      && store.rows.filter { $0.translated != nil }.count == 1,
+                  "rows=\(store.rows.map { $0.translated ?? "-" })")
+            ingest(store, raw: "filler-3", cacheKey: "f3", frame: 93, ts: 93_000)
+            check("S10c", "共享 key 的最后一行淘汰后，索引必须为空（不得指向 filler）",
+                  store.rowsSharingCacheKey("shared").isEmpty,
+                  "indices=\(store.rowsSharingCacheKey("shared")) rows=\(store.rows.map { $0.raw })")
+        }
+
         print("1..\(total)")
         print("# pass \(pass) fail \(fail)")
     }
