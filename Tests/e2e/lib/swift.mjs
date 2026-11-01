@@ -35,6 +35,15 @@ export const SOURCES = {
     ...SOURCES.domain(),
     path.join(ROOT, 'Sources/Domain/TextStreamStore.swift')
   ],
+  // 经典 RM（2000/2003）数据层：LCFDatabase 依赖 liblcf 的 C shim（构建产物在 vendor/），
+  // 所以额外要传 shim 头与静态库 —— 见 compileProbe 的 extraArgs。
+  // LCFError 必须**无条件**编进来：LCFTextCodec 也抛它，而 LCFDatabase 在没有 liblcf 的
+  // 机器上会被 MOCHI_NO_LCF 整段编译掉。
+  lcf: () => [
+    path.join(ROOT, 'Sources/Adapters/LCF/LCFError.swift'),
+    path.join(ROOT, 'Sources/Adapters/LCF/LCFTextCodec.swift'),
+    path.join(ROOT, 'Sources/Adapters/LCF/LCFDatabase.swift')
+  ],
   qa: () => [
     ...SOURCES.domain(),
     // 缓存纯度用例要真跑 TranslationPipeline，它只被 qa 探针引用；
@@ -48,10 +57,11 @@ export const SOURCES = {
 
 /**
  * 编译一个探针，返回 { bin, dir, cleanup() }。
- * @param {{ name: string, probeFile: string, sources: string[] }} options
+ * @param {{ name: string, probeFile: string, sources: string[], extraArgs?: string[] }} options
+ *   extraArgs 追加在源文件之后、-o 之前：给需要额外链接物（.o / .a / -import-objc-header）的探针用。
  */
 export function compileProbe(options) {
-  const { name, probeFile, sources } = options;
+  const { name, probeFile, sources, extraArgs = [] } = options;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mochibox-e2e-' + name + '-'));
   const bin = path.join(dir, name);
   try {
@@ -60,6 +70,7 @@ export function compileProbe(options) {
       '-parse-as-library',
       ...sources,
       probeFile,
+      ...extraArgs,
       '-o', bin
     ], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 300000, maxBuffer: 16 * 1024 * 1024 });
   } catch (error) {

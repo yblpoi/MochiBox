@@ -203,7 +203,7 @@ Sources/     Swift 源码：App / Domain / Adapters / Infra / UI / SelfTest
 Resources/   agent_mvmz.js —— 注入游戏的 Agent 脚本（唯一运行时资源）
 Scripts/     build.sh（唯一构建入口）、Info.plist、build-ffmpeg.sh
 Tests/       e2e 分层测试入口（见 docs/testing.md）与 QA 探针
-Fixtures/    合成替身：mock 翻译后端、mv_stub 测试页
+Fixtures/    测试数据：合成替身（mock 后端 / mv_stub）+ 第三方 RM2000/2003 样本
 Design/      应用图标源文件
 docs/        架构 / 验收 / QA / 交接
 ```
@@ -243,3 +243,8 @@ bash Tests/e2e/run.sh --suite all        # 依次全跑
 MochiBox 是独立实现，不含任何游戏、引擎或其厂商的代码与素材。
 它读取**你自己的**本地游戏目录，只把待翻译的文本片段发送到**你自己配置**的翻译后端。
 请勿用它再分发游戏素材，或绕过任何授权与保护措施。
+
+第三方测试数据：`Fixtures/rm2000/` 与 `Fixtures/rm2003/` 里的 `RPG_RT.ldb` / `RPG_RT.lmt` /
+`RPG_RT.ini` 来自 [EasyRPG/TestGame](https://github.com/EasyRPG/TestGame)（GPL-3.0，
+commit `4bbedb7`），仅用于端到端测试，不参与编译产物，来源与哈希见
+[Fixtures/README.md](Fixtures/README.md) 与各目录 `PROVENANCE.md`。

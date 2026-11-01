@@ -49,6 +49,42 @@ if [ -z "$SOURCES" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 0.6 -- 经典 RM 数据层（RPG Maker 2000/2003 的 RPG_RT.ldb）。
+#
+# 由 Scripts/build-liblcf.sh 产出静态 liblcf，本仓库只提供一层 C shim
+# （Sources/Adapters/LCF/lcf_shim.cpp）把它的反射式字段路径暴露给 Swift。
+#
+# 为什么是**可选**的（与 Step 2.5 的 ffmpeg 同一口径）：
+#   liblcf 需要 cmake+ninja 现场编（约 30s，5MB 静态库），不是每个开发机都有。
+#   没有它时产物照常可用，只是经典 RM 数据层不可用 —— **绝不能因此让构建失败**。
+#   所以：产物缺失 → 定义 MOCHI_NO_LCF，Swift 侧 #if 掉整个 LCFDatabase。
+#   反过来，产物在但 shim 编不过就是真错误，必须立刻炸（不许静默降级）。
+#
+# 为什么 .cpp 要单独处理：下面的 SOURCES 是 `find -name '*.swift'`，收不到 .cpp；
+# 而 shim 必须和 liblcf 一起链进同一个二进制。
+# ---------------------------------------------------------------------------
+LCF_HEADER="$ROOT/Sources/Adapters/LCF/lcf_shim.h"
+LCF_SHIM="$ROOT/Sources/Adapters/LCF/lcf_shim.cpp"
+LCF_PREFIX="$ROOT/vendor/liblcf-build/install"
+LCF_LIB="$LCF_PREFIX/lib/liblcf.a"
+LCF_FLAGS=()
+if [ -f "$LCF_LIB" ] && [ -f "$LCF_HEADER" ] && [ -d "$LCF_PREFIX/include/lcf" ]; then
+  echo "==> lcf: $(ls -lh "$LCF_LIB" | awk '{print $5}') liblcf.a @ $(cat "$ROOT/vendor/liblcf-build/COMMIT" 2>/dev/null || echo '?')"
+  mkdir -p "$BUILD/lcf"
+  # -fvisibility=hidden：只导出 lcf_shim.h 里标了 visibility("default") 的 C 函数，
+  # 把 liblcf 的 C++ 符号关在二进制内部。
+  clang++ -std=c++17 -O2 -arch arm64 -mmacosx-version-min=13.0 -fvisibility=hidden \
+    -c "$LCF_SHIM" \
+    -I "$ROOT/Sources/Adapters/LCF" -I "$LCF_PREFIX/include" \
+    -o "$BUILD/lcf/lcf_shim.o"
+  LCF_FLAGS=(-import-objc-header "$LCF_HEADER" "$BUILD/lcf/lcf_shim.o" "$LCF_LIB" -lc++)
+else
+  echo "==> lcf: vendor/liblcf-build 不存在 —— 经典 RM(2000/2003) 数据层不可用"
+  echo "          （需要时跑: bash Scripts/build-liblcf.sh；打包流程不依赖它）"
+  LCF_FLAGS=(-DMOCHI_NO_LCF)
+fi
+
+# ---------------------------------------------------------------------------
 # Step 0.5 -- SDK selection (why this exists).
 #
 # 本机只装了 CommandLineTools，`xcode-select -p` 指向它；里面同时有
@@ -108,6 +144,7 @@ compile() {
     -target "$1" \
     ${SDK_FLAGS[@]+"${SDK_FLAGS[@]}"} \
     $SOURCES \
+    ${LCF_FLAGS[@]+"${LCF_FLAGS[@]}"} \
     -o "$BIN" \
     -framework SwiftUI -framework AppKit -framework Network \
     -framework JavaScriptCore -framework Security \
