@@ -39,7 +39,27 @@ const FIXTURES = [
 
 const CLANG = '/usr/bin/clang++';
 
+/**
+ * 等另一个 worker 的 liblcf 重建结束。
+ *
+ * Scripts/build-liblcf.sh 重建时会 rm -rf vendor/liblcf-build，这期间 liblcf.a 不在。
+ * 不等就会把"别人正在重编"报成"依赖不齐"—— 我实际撞到过一次，那种假失败会误导人。
+ * 锁是 mkdir 做的目录（macOS 没有 flock），构建脚本退出时会删掉它。
+ */
+function waitWhileRebuilding(tap, maxSeconds = 120) {
+  const lock = path.join(ROOT, 'vendor/.liblcf-build.lock');
+  if (!fs.existsSync(lock)) { return; }
+  tap.note('检测到 liblcf 正在重建（vendor/.liblcf-build.lock），最多等 ' + maxSeconds + 's…');
+  for (let i = 0; i < maxSeconds; i += 1) {
+    if (!fs.existsSync(lock)) { tap.note('重建已结束，继续。'); return; }
+    execFileSync('/bin/sleep', ['1']);
+  }
+  tap.note('等了 ' + maxSeconds + 's 锁还在 —— 按缺件处理（见下面的 FBATAL）。');
+}
+
 runCase('lcf-extract', (tap) => {
+  waitWhileRebuilding(tap);
+
   // 缺件时的口径：这一层是**可选构建**（见 Scripts/build.sh 的 Step 0.6），
   // 但一旦用例跑到这里，缺件就意味着"本层没被验证过"。静默跳过等于假绿，
   // 所以记一条 FATAL 并把补救命令写清楚。

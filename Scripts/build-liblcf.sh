@@ -90,7 +90,36 @@ if [ "$FORCE" -eq 0 ] && is_ready; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 0 -- 工具链门槛（缺什么就说怎么装，然后非 0 退出，不做半截构建）
+# Step 0 -- 重建互斥锁
+#
+# 为什么需要：重建一开始就 rm -rf "$BLD"，这期间任何读 liblcf.a 的动作（contract 18）
+# 都会看到"文件不存在"，报成"依赖不齐"的假失败；两个并发重建更糟 —— 后一个的 rm -rf
+# 会删掉前一个正在写的产物。
+#
+# macOS 没有 flock(1)，这里用 mkdir 的原子性做锁目录，trap 保证异常退出也解锁。
+# 读侧（Tests/e2e/cases/contract/18_lcf_extract.mjs）会先看这个锁目录：存在就等，
+# 而不是直接判缺件。
+# ---------------------------------------------------------------------------
+LOCK="$ROOT/vendor/.liblcf-build.lock"
+acquire_lock() {
+  local waited=0
+  while ! mkdir "$LOCK" 2>/dev/null; do
+    if [ "$waited" -eq 0 ]; then
+      printf '  另一个构建正在进行（%s），等待…\n' "$LOCK"
+    fi
+    sleep 1
+    waited=$((waited + 1))
+    if [ "$waited" -ge 300 ]; then
+      printf 'error: 等锁超过 300s。%s 可能是上次异常退出留下的，确认没有构建在跑后删掉它\n' "$LOCK" >&2
+      exit 1
+    fi
+  done
+  trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+}
+acquire_lock
+
+# ---------------------------------------------------------------------------
+# Step 0.1 -- 工具链门槛（缺什么就说怎么装，然后非 0 退出，不做半截构建）
 # ---------------------------------------------------------------------------
 stage "工具链检查"
 missing=""
