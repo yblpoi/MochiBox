@@ -31,6 +31,13 @@ struct LCFStringEntry: Equatable {
     let raw: Data
 }
 
+/// 一段对话框消息（EasyRPG 的 msgid 单位）：10110 + 紧随的 20110 已按 \n 拼好。
+/// path 末尾的 `messages[k]` 是块序号，不是指令下标。
+struct LCFMessageEntry: Equatable {
+    let path: String
+    let raw: Data
+}
+
 /// 引擎版本。判据是 liblcf 的 `db.system.ldb_id == 2003`（src/saveopt.cpp 的
 /// GetEngineVersion）——不是文件名、不是目录结构，也不是"有没有 classes"。
 enum RMEasyRPGVersion: String, CaseIterable {
@@ -41,6 +48,29 @@ enum RMEasyRPGVersion: String, CaseIterable {
 /// C 回调只能是无捕获函数指针，所以收集器必须是独立对象（三张表共用同一个）。
 final class LCFStringCollector {
     var entries: [LCFStringEntry] = []
+}
+
+/// 消息块的收集器（与 LCFStringCollector 同理：C 回调必须无捕获）。
+final class LCFMessageCollector {
+    var entries: [LCFMessageEntry] = []
+}
+
+/// 直接作为 lcf_*_for_each_message 的 cbfunc 传入。
+func lcfAppendMessage(
+    userdata: UnsafeMutableRawPointer?,
+    path: UnsafePointer<CChar>?,
+    bytes: UnsafePointer<CChar>?,
+    len: Int32
+) {
+    guard let userdata, let path else { return }
+    let collector = Unmanaged<LCFMessageCollector>.fromOpaque(userdata).takeUnretainedValue()
+    let raw: Data
+    if let bytes, len > 0 {
+        raw = Data(bytes: bytes, count: Int(len))
+    } else {
+        raw = Data()
+    }
+    collector.entries.append(LCFMessageEntry(path: String(cString: path), raw: raw))
 }
 
 /// 直接作为 lcf_*_for_each_string 的 cbfunc 传入。
@@ -113,6 +143,19 @@ final class LCFDatabase {
         let collector = LCFStringCollector()
         _ = lcf_db_for_each_string(handle, lcfAppendString,
                                    Unmanaged.passUnretained(collector).toOpaque())
+        return collector.entries
+    }
+
+    /// 遍历数据库里的消息块（公共事件 + 敌群事件）。
+    ///
+    /// 与 allStrings() 的关系：allStrings 是"逐字段"，这里是"逐对话框"——
+    /// PO 的 msgid 是整条消息（10110 的 string + 后续 20110 的 string，用 \n 连接），
+    /// 直接拿单条指令的 string 去查表永远对不上。
+    func allMessages() -> [LCFMessageEntry] {
+        guard let handle else { return [] }
+        let collector = LCFMessageCollector()
+        _ = lcf_db_for_each_message(handle, lcfAppendMessage,
+                                    Unmanaged.passUnretained(collector).toOpaque())
         return collector.entries
     }
 

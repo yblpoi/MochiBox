@@ -431,6 +431,104 @@ struct LCFProbe {
         check("L40", "chunk 扫描器自检：rm2000 的顶层 chunk 集合与已知布局一致",
               Set(baseChunks) == expectedChunks,
               "got=\(baseChunks.map { String(format: "0x%02X", $0) })")
+        // ---- PO 导出（EasyRPG gettext） ----
+        // 一条译文要能进文件，必须先被调用方按"解码后的原文"放进 translations；
+        // 这里手工准备四条：数据库字段、公共事件消息、地图消息（含控制码）、地图名。
+        let mapMessages2000 = map2000.allMessages()
+        let firstMapMessage = mapMessages2000.isEmpty
+            ? nil
+            : try LCFTextCodec.decode(mapMessages2000[0].raw).text
+        let treeName = tree2000.strings.first { !$0.raw.isEmpty }
+            .map { (try? LCFTextCodec.decode($0.raw).text) ?? nil } ?? nil
+
+        var translations: [String: String] = [
+            "Alex": "阿历克斯",
+            "Soldier": "士兵",
+            "Hello from Common Event": "来自公共事件"
+        ]
+        if let firstMapMessage {
+            translations[firstMapMessage] = "测试消息速度：\\n\\\\s[1]速度 1"
+        }
+        if let treeName {
+            translations[treeName] = "测试地图名"
+        }
+
+        let poRoot = work.appendingPathComponent("po", isDirectory: true)
+        let poOptions = POExportOptions(languageID: "zh_CN",
+                                        languageName: "简体中文",
+                                        languageCode: "zh_CN",
+                                        gameTitle: "TestGame")
+        let dbSummary = try POExporter.exportDatabase(db, translations: translations, to: poRoot, options: poOptions)
+        let treeSummary = try POExporter.exportMapTree(tree2000, translations: translations, to: poRoot, options: poOptions)
+        let mapSummary = try POExporter.exportMaps([(id: 1, file: map2000)], translations: translations,
+                                                   to: poRoot, options: poOptions)
+        let poDirectory = poRoot.appendingPathComponent("zh_CN")
+        let poFiles = Set((try FileManager.default.contentsOfDirectory(atPath: poDirectory.path)))
+        note("PO 文件: " + poFiles.sorted().joined(separator: ", "))
+
+        check("L41", "PO 按需生成：ldb / common / lmt / Map0001，没有译文的 battle 不生成",
+              poFiles == ["meta.ini", "rpg_rt.ldb.po", "rpg_rt.ldb.common.po", "rpg_rt.lmt.po", "Map0001.po"],
+              "实际=" + poFiles.sorted().joined(separator: ","))
+
+        let metaText = try String(contentsOf: poDirectory.appendingPathComponent("meta.ini"), encoding: .utf8)
+        let metaKeys = ["Name=", "Description=", "Code=", "Term=", "GameTitle=", "Font="]
+        check("L42", "meta.ini 是 [Language] 段且六个键齐全",
+              metaText.contains("[Language]") && metaKeys.allSatisfy { metaText.contains($0) },
+              metaText.replacingOccurrences(of: "\n", with: " | "))
+
+        let dbPO = try String(contentsOf: poDirectory.appendingPathComponent("rpg_rt.ldb.po"), encoding: .utf8)
+        check("L43", "数据库字段的 msgctxt 是 1-based（actors.1.name / actors.1.title）",
+              dbPO.contains("msgctxt \"actors.1.name\"") && dbPO.contains("msgctxt \"actors.1.title\"")
+                && dbPO.contains("msgid \"Alex\"") && dbPO.contains("msgstr \"阿历克斯\""),
+              dbPO.split(separator: "\n").prefix(16).joined(separator: " | "))
+
+        let commonPO = try String(contentsOf: poDirectory.appendingPathComponent("rpg_rt.ldb.common.po"), encoding: .utf8)
+        check("L44", "公共事件 msgid 是整条消息（10110 块），不是单条指令",
+              commonPO.contains("msgid \"Hello from Common Event\"")
+                && commonPO.contains("msgstr \"来自公共事件\""),
+              commonPO.split(separator: "\n").prefix(10).joined(separator: " | "))
+
+        let mapPO = try String(contentsOf: poDirectory.appendingPathComponent("Map0001.po"), encoding: .utf8)
+        // 原文里是「Testing message speed:\\n\\s[1]Speed 1」：换行 -> 字面 \\n，
+        // 控制码的单反斜杠 -> 两个反斜杠（引擎只认这三种转义，多一个反斜杠就整文件报错）。
+        check("L45", "地图消息的 msgid 含续行（\\n 转义）与控制码（\\\\s[1] 转义）",
+              mapPO.contains("msgid \"Testing message speed:\\n\\\\s[1]Speed 1\""),
+              mapPO.split(separator: "\n").filter { $0.hasPrefix("msgid") }.prefix(3).joined(separator: " | "))
+
+        // 回读校验：把生成的文件再按引擎规则解析一遍，条目必须与 summary 对得上。
+        var readBackOK = true
+        var readBackDetail = ""
+        for (file, count) in dbSummary.entriesByFile {
+            let text = try String(contentsOf: poDirectory.appendingPathComponent(file), encoding: .utf8)
+            let parsed = try POExporter.parse(text)
+            if parsed.count != count {
+                readBackOK = false
+                readBackDetail += file + ": 期望 " + String(count) + " 条，读回 " + String(parsed.count) + " 条; "
+            }
+        }
+        let mapParsed = try POExporter.parse(mapPO)
+        if mapParsed.count != (mapSummary.entriesByFile["Map0001.po"] ?? -1) {
+            readBackOK = false
+            readBackDetail += "Map0001.po 条目数不符; "
+        }
+        let treeParsed = try POExporter.parse(
+            try String(contentsOf: poDirectory.appendingPathComponent("rpg_rt.lmt.po"), encoding: .utf8))
+        if treeParsed.count != (treeSummary.entriesByFile["rpg_rt.lmt.po"] ?? -1) {
+            readBackOK = false
+            readBackDetail += "rpg_rt.lmt.po 条目数不符; "
+        }
+        check("L46", "生成的 PO 回读后条目数与写入一致", readBackOK, readBackDetail)
+
+        // 反例：篡改一条 msgid，verify 必须报错（引擎侧失配是静默的，这里是唯一防线）。
+        let tampered = mapPO.replacingOccurrences(of: "msgid \"Testing message speed:",
+                                                 with: "msgid \"XTesting message speed:")
+        var tamperCaught = false
+        do {
+            try POExporter.verify(tampered, expected: mapParsed)
+        } catch let error as POExportError {
+            if case .readBackMismatch = error { tamperCaught = true }
+        }
+        check("L47", "篡改 msgid 后回读校验必须报错", tamperCaught, "篡改没有被检出")
     }
 
     // MARK: - 顶层 chunk 扫描
@@ -473,5 +571,7 @@ struct LCFProbe {
             if byte & 0x80 == 0 { return value }
             if loops > 5 { return nil }
         }
+
+
     }
 }

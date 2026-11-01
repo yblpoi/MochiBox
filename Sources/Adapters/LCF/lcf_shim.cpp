@@ -97,6 +97,46 @@ struct StringIndex {
 };
 
 /// 把字段拷进句柄自己的 scratch，返回稳定指针（下一次调用前有效）。
+/// 消息块的指令码。**不是** 101/401（那是 RGSS 的口径）：RPG Maker 2000/2003
+/// 的真实值就是 10110（显示消息）与 20110（续行）—— 用 Fixtures 里的真实数据核过。
+constexpr int kShowMessage = 10110;
+constexpr int kMessageContinuation = 20110;
+/// EasyRPG translation.cpp 的 maxLines：一条消息最多 4 行，超出部分引擎不再取，
+/// 我们同样不取（否则 msgid 与引擎查表用的串对不上，永远翻不到）。
+constexpr int kMaxMessageLines = 4;
+
+std::string field_bytes(const lcf::DBString& field) {
+    const char* data = (field.size() > 0) ? field.data() : "";
+    return std::string(data, field.size());
+}
+
+/// 把一串事件指令按「10110 + 连续 20110」切成消息块，逐块回调。
+int each_message_block(const std::vector<lcf::rpg::EventCommand>& commands,
+                       const std::string& prefix, lcf_message_cb cb, void* userdata) {
+    int count = 0;
+    size_t block = 0;
+    size_t i = 0;
+    while (i < commands.size()) {
+        if (commands[i].code != kShowMessage) { ++i; continue; }
+        std::string text = field_bytes(commands[i].string);
+        int lines = 1;
+        size_t j = i + 1;
+        while (j < commands.size() && commands[j].code == kMessageContinuation
+               && lines < kMaxMessageLines) {
+            text += '\n';
+            text += field_bytes(commands[j].string);
+            ++lines;
+            ++j;
+        }
+        std::string path = prefix + ".messages[" + std::to_string(block) + "]";
+        cb(userdata, path.c_str(), text.data(), static_cast<int>(text.size()));
+        ++count;
+        ++block;
+        i = j;
+    }
+    return count;
+}
+
 const char* store_and_return(const lcf::DBString& field, std::string& scratch, int* out_len) {
     if (field.size() > 0) {
         scratch.assign(field.data(), field.size());
@@ -201,6 +241,23 @@ int lcf_db_ldb_id(const lcf_db* db) {
     return (db != nullptr && db->object) ? static_cast<int>(db->object->system.ldb_id) : 0;
 }
 
+int lcf_db_for_each_message(lcf_db* db, lcf_message_cb cb, void* userdata) {
+    if (db == nullptr || !db->object || cb == nullptr) { return 0; }
+    int count = 0;
+    for (size_t i = 0; i < db->object->commonevents.size(); ++i) {
+        count += each_message_block(db->object->commonevents[i].event_commands,
+                                    "commonevents[" + std::to_string(i) + "]", cb, userdata);
+    }
+    for (size_t t = 0; t < db->object->troops.size(); ++t) {
+        for (size_t p = 0; p < db->object->troops[t].pages.size(); ++p) {
+            count += each_message_block(db->object->troops[t].pages[p].event_commands,
+                                        "troops[" + std::to_string(t) + "].pages["
+                                            + std::to_string(p) + "]", cb, userdata);
+        }
+    }
+    return count;
+}
+
 // ---------------------------------------------------------------------------
 // 地图
 // ---------------------------------------------------------------------------
@@ -222,6 +279,19 @@ void lcf_map_free(lcf_map* map) {
 
 void lcf_map_set_engine(lcf_map* map, int use_2003) {
     if (map != nullptr) { map->use_2003 = (use_2003 != 0); }
+}
+
+int lcf_map_for_each_message(lcf_map* map, lcf_message_cb cb, void* userdata) {
+    if (map == nullptr || !map->object || cb == nullptr) { return 0; }
+    int count = 0;
+    for (size_t e = 0; e < map->object->events.size(); ++e) {
+        for (size_t p = 0; p < map->object->events[e].pages.size(); ++p) {
+            count += each_message_block(map->object->events[e].pages[p].event_commands,
+                                        "events[" + std::to_string(e) + "].pages["
+                                            + std::to_string(p) + "]", cb, userdata);
+        }
+    }
+    return count;
 }
 
 int lcf_map_for_each_string(lcf_map* map, lcf_string_cb cb, void* userdata) {

@@ -100,6 +100,24 @@ LCF_EXPORT int lcf_db_item_count(const lcf_db* db);
 LCF_EXPORT int lcf_db_ldb_id(const lcf_db* db);
 
 // ---------------------------------------------------------------------------
+// 消息块（PO 导出的 msgid 单位）
+// ---------------------------------------------------------------------------
+
+/// 一段「对话框消息」：EasyRPG 的 msgid 单位不是单条指令，而是
+/// **10110（显示消息）+ 紧随的 20110（续行）** 拼成的一整条，行间用 \n 连接、
+/// 结尾不留 \n，最多 4 行（EasyRPG translation.cpp 的 maxLines）。
+///
+/// 为什么必须在 C 层做：拼接要看 event command 的 **code**，而 code 是 int32，
+/// 不在 ForEachString 的文本字段里；Swift 侧只有 string，分不清哪条是续行。
+///
+/// path 形如 `commonevents[3].messages[7]`、`troops[88].pages[0].messages[2]`、
+/// `events[2].pages[0].messages[5]` —— 末尾的 messages[k] 是块序号，不是指令下标。
+typedef void (*lcf_message_cb)(void* userdata, const char* path, const char* bytes, int len);
+
+/// 遍历数据库里的消息块（公共事件 + 敌群事件），返回块数。
+LCF_EXPORT int lcf_db_for_each_message(lcf_db* db, lcf_message_cb cb, void* userdata);
+
+// ---------------------------------------------------------------------------
 // 地图 / MapNNNN.lmu
 // ---------------------------------------------------------------------------
 
@@ -116,6 +134,9 @@ LCF_EXPORT void lcf_map_free(lcf_map* map);
 /// 调用方知道版本（从同一个游戏的 RPG_RT.ldb 读），所以由它显式告知；
 /// 默认 2000 是为了"不知道版本时按最保守的格式写"，不是猜。
 LCF_EXPORT void lcf_map_set_engine(lcf_map* map, int use_2003);
+
+/// 遍历地图里的消息块（地图事件的 10110+20110），返回块数。口径同 lcf_db_for_each_message。
+LCF_EXPORT int lcf_map_for_each_message(lcf_map* map, lcf_message_cb cb, void* userdata);
 
 /// 遍历地图里的文本字段，返回条数。路径形如
 /// `events[2].pages[0].list[5].string`、`parallax_name`。

@@ -53,6 +53,15 @@ final class LCFMapFile {
         return collector.entries
     }
 
+    /// 遍历地图里的消息块（10110 + 20110 拼接，口径同 LCFDatabase.allMessages）。
+    func allMessages() -> [LCFMessageEntry] {
+        guard let handle else { return [] }
+        let collector = LCFMessageCollector()
+        _ = lcf_map_for_each_message(handle, lcfAppendMessage,
+                                     Unmanaged.passUnretained(collector).toOpaque())
+        return collector.entries
+    }
+
     /// 按路径取原始字节；路径不存在返回 nil。
     func bytes(at path: String) -> Data? {
         guard let handle else { return nil }

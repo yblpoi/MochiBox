@@ -44,7 +44,9 @@ export const SOURCES = {
     path.join(ROOT, 'Sources/Adapters/LCF/LCFTextCodec.swift'),
     path.join(ROOT, 'Sources/Adapters/LCF/LCFDatabase.swift'),
     path.join(ROOT, 'Sources/Adapters/LCF/LCFMapFile.swift'),
-    path.join(ROOT, 'Sources/Adapters/LCF/LCFMapTree.swift')
+    path.join(ROOT, 'Sources/Adapters/LCF/LCFMapTree.swift'),
+    // PO 导出器在 Infra 层，但它只依赖 LCF 三件套，跟着这一组编译。
+    path.join(ROOT, 'Sources/Infra/POExporter.swift')
   ],
   qa: () => [
     ...SOURCES.domain(),
