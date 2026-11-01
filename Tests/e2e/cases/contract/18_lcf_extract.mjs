@@ -38,6 +38,8 @@ const FIXTURES = [
 ];
 
 const CLANG = '/usr/bin/clang++';
+// 与 Scripts/build-liblcf.sh 里 acquire_lock 用的是同一个目录（mkdir 做的互斥锁）。
+const LOCK = path.join(ROOT, 'vendor/.liblcf-build.lock');
 
 /**
  * 等另一个 worker 的 liblcf 重建结束。
@@ -47,7 +49,7 @@ const CLANG = '/usr/bin/clang++';
  * 锁是 mkdir 做的目录（macOS 没有 flock），构建脚本退出时会删掉它。
  */
 function waitWhileRebuilding(tap, maxSeconds = 120) {
-  const lock = path.join(ROOT, 'vendor/.liblcf-build.lock');
+  const lock = LOCK;
   if (!fs.existsSync(lock)) { return; }
   tap.note('检测到 liblcf 正在重建（vendor/.liblcf-build.lock），最多等 ' + maxSeconds + 's…');
   for (let i = 0; i < maxSeconds; i += 1) {
@@ -74,8 +76,10 @@ runCase('lcf-extract', (tap) => {
   }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mochibox-lcf-'));
-  let compiled = null;
-  try {
+
+  // 编译 → 造库 → 编探针。抽成函数是为了"撞车时整体重来一次"：
+  // 只要中途 liblcf.a 被 rm -rf 掉，前面已经产出的 .o 也可能不可信，重来比续做干净。
+  const prepare = () => {
     const obj = path.join(tmp, 'lcf_shim.o');
     execFileSync(CLANG, [
       '-std=c++17', '-O2', '-arch', 'arm64', '-mmacosx-version-min=13.0',
@@ -99,14 +103,40 @@ runCase('lcf-extract', (tap) => {
     execFileSync(synthBin, ['empty-2k3', FIXTURES[1], synthEmpty2k3], { cwd: ROOT, encoding: 'utf8', timeout: 120000 });
     execFileSync(synthBin, ['inject-2k', FIXTURES[0], synth2kWithClasses], { cwd: ROOT, encoding: 'utf8', timeout: 120000 });
 
-    compiled = compileProbe({
+    const built = compileProbe({
       name: 'lcf_probe',
       probeFile: PROBE,
       sources: SOURCES.lcf(),
       extraArgs: ['-import-objc-header', SHIM_H, obj, LIBLCF, '-lc++']
     });
+    return { built, args: [...FIXTURES, synthEmpty2k3, synth2kWithClasses] };
+  };
 
-    const result = runProbe(compiled.bin, [...FIXTURES, synthEmpty2k3, synth2kWithClasses]);
+  // 重试口径：只有"看起来像撞上重建"才重来一次（锁在 / 产物没了），其它编译错误立刻报。
+  // 这样既不会把真错误吞成一次重试，也不会把并发编辑报成回归。
+  const lockLooksHeld = () => fs.existsSync(LOCK) || !fs.existsSync(LIBLCF);
+
+  let prepared = null;
+  for (let attempt = 1; attempt <= 2 && prepared === null; attempt += 1) {
+    try {
+      prepared = prepare();
+    } catch (error) {
+      if (attempt === 2 || !lockLooksHeld()) {
+        tap.fatal('lcf_probe 编译或造库失败', error);
+        fs.rmSync(tmp, { recursive: true, force: true });
+        return;
+      }
+      tap.note('编译时撞上别人重建 liblcf（锁在或产物缺失），等它结束后整体重试一次…');
+      waitWhileRebuilding(tap);
+      // 半截产物清掉：swiftc 如果拿到上一轮的坏 .o，重试也白搭。
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.mkdirSync(tmp, { recursive: true });
+    }
+  }
+  if (prepared === null) { return; }
+
+  try {
+    const result = runProbe(prepared.built.bin, prepared.args);
     tap.absorbTap(result.stdout);
     if (result.stderr.trim() !== '') {
       // L25 故意喂了一个非 LCF 文件，liblcf 会往 stderr 打一行 "This is not a valid
@@ -122,10 +152,8 @@ runCase('lcf-extract', (tap) => {
     } else if (!/^1\.\.\d+$/m.test(result.stdout)) {
       tap.fatal('lcf_probe 没有打印 TAP 计划行（输出被截断？）', new Error(result.stdout.slice(0, 500)));
     }
-  } catch (error) {
-    tap.fatal('lcf_probe 编译或造库失败', error);
   } finally {
-    if (compiled) { compiled.cleanup(); }
+    prepared.built.cleanup();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
