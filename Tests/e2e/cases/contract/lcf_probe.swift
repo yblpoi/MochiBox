@@ -452,7 +452,11 @@ struct LCFProbe {
         var translations: [String: String] = [
             "Alex": "阿历克斯",
             "Soldier": "士兵",
-            "Hello from Common Event": "来自公共事件"
+            "Hello from Common Event": "来自公共事件",
+            // terms 的命令项：$A / $c 是 EasyRPG 的控制后缀，属于 msgid 的一部分，
+            // 必须逐字节保留（剥掉就永远查不到）。
+            "Items$A": "物品$A",
+            "End Game$c": "结束游戏$c"
         ]
         if let firstMapMessage {
             translations[firstMapMessage] = "测试消息速度：\\n\\\\s[1]速度 1"
@@ -485,10 +489,36 @@ struct LCFProbe {
               metaText.replacingOccurrences(of: "\n", with: " | "))
 
         let dbPO = try String(contentsOf: poDirectory.appendingPathComponent("rpg_rt.ldb.po"), encoding: .utf8)
-        check("L43", "数据库字段的 msgctxt 是 1-based（actors.1.name / actors.1.title）",
-              dbPO.contains("msgctxt \"actors.1.name\"") && dbPO.contains("msgctxt \"actors.1.title\"")
-                && dbPO.contains("msgid \"Alex\"") && dbPO.contains("msgstr \"阿历克斯\""),
-              dbPO.split(separator: "\n").prefix(16).joined(separator: " | "))
+        // msgctxt 必须是**非索引**形态：0.8.1 的 RewriteDatabase 索引分支以
+        // ctxt.index >= 0 为闸门，而 scalar 字段的 ctxt.index 恒为 -1 ——
+        // actors.1.name 实测一条都查不到（端到端截图确认过）。
+        let dbContexts = dbPO.split(separator: "\n")
+            .filter { $0.hasPrefix("msgctxt ") }
+            .map(String.init)
+        // 三层以上的真实路径（如 commonevents[0].event_commands[1].string）只能落空
+        // msgctxt 兜底；直接从库里取一条，避免钉死某个结构。
+        let deepPath = db.allStrings().map(\.path)
+            .first { $0.split(separator: ".").count >= 3 } ?? ""
+        check("L43", "数据库字段的 msgctxt 非索引（actors.name / system.title_name 原样 / 三层为空）",
+              dbContexts.contains("msgctxt \"actors.name\"")
+                && dbContexts.contains("msgctxt \"actors.title\"")
+                && dbPO.contains("msgid \"Alex\"") && dbPO.contains("msgstr \"阿历克斯\"")
+                && POExporter.context(for: "system.title_name") == "system.title_name"
+                && POExporter.context(for: "terms.command_item") == "terms.command_item"
+                && !deepPath.isEmpty && POExporter.context(for: deepPath) == "",
+              dbContexts.prefix(6).joined(separator: " | ")
+                + " || deepPath=\(deepPath) -> [\(POExporter.context(for: deepPath))]")
+
+        // terms 的 path 由 liblcf 反射给出的是 **terms.<field>**（System.terms 在
+        // Database::ForEachString 里是 system 的兄弟，不嵌套），与引擎查表的
+        // "{parentName}.{fieldName}" 正好一致，所以不需要额外映射。
+        check("L43b", "terms 命令项是 terms.command_item 且 $A / $c 控制后缀逐字节保留",
+              dbPO.contains("msgctxt \"terms.command_item\"")
+                && dbPO.contains("msgid \"Items$A\"") && dbPO.contains("msgstr \"物品$A\"")
+                && dbPO.contains("msgctxt \"terms.menu_quit\"")
+                && dbPO.contains("msgid \"End Game$c\"") && dbPO.contains("msgstr \"结束游戏$c\""),
+              dbPO.split(separator: "\n").filter { $0.hasPrefix("msgid \"Item") || $0.hasPrefix("msgid \"End") }
+                .joined(separator: " | "))
 
         let commonPO = try String(contentsOf: poDirectory.appendingPathComponent("rpg_rt.ldb.common.po"), encoding: .utf8)
         check("L44", "公共事件 msgid 是整条消息（10110 块），不是单条指令",
@@ -537,6 +567,21 @@ struct LCFProbe {
             if case .readBackMismatch = error { tamperCaught = true }
         }
         check("L47", "篡改 msgid 后回读校验必须报错", tamperCaught, "篡改没有被检出")
+
+        // 回归守卫：所有 PO 的 msgctxt 都不许带数字下标。
+        // 索引形态在 0.8.1 上实测无效（见 L43），"优化"回去等于悄悄关掉数据库翻译，
+        // 而引擎失配是静默的 —— 只有这一层能拦住。
+        var indexedContexts: [String] = []
+        for file in poFiles.sorted() where file.hasSuffix(".po") {
+            let text = try String(contentsOf: poDirectory.appendingPathComponent(file), encoding: .utf8)
+            for line in text.split(separator: "\n") where line.hasPrefix("msgctxt ") {
+                if line.range(of: "\\.\\d+\\.", options: .regularExpression) != nil {
+                    indexedContexts.append(file + ":" + line)
+                }
+            }
+        }
+        check("L48", "所有 PO 的 msgctxt 都不含数字下标（\\.\\d+\\. 不命中）",
+              indexedContexts.isEmpty, indexedContexts.joined(separator: " | "))
     }
 
     // MARK: - 顶层 chunk 扫描

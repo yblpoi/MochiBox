@@ -18,7 +18,10 @@
 //
 //  2) meta.ini 是 [Language] 段，不是顶层键：写在顶层会被静默忽略、全部走默认值。
 //
-//  3) 数据库字段用 msgctxt，下标 **1-based**：actors[0].name -> actors.1.name。
+//  3) 数据库字段用 msgctxt，**不带下标**：actors[0].name -> actors.name。
+//     实测 0.8.1 的 RewriteDatabase 先试索引形态（"actors.1.name"）再试非索引形态，
+//     但索引分支的闸门是 ctxt.index >= 0 —— scalar 字段的 ctxt.index 恒为 -1，
+//     所以索引形态一条都查不到；**非索引才是唯一生效的键**。
 //     Player 只处理一层深（父上下文的父上下文必须为空），三层以上只能靠空 msgctxt 兜底。
 //
 //  4) 消息的 msgid 是**整条对话框**：10110 的 string + 紧随的 20110 用 \n 连起来、
@@ -196,22 +199,28 @@ enum POExporter {
 
     // MARK: - msgctxt
 
-    /// actors[0].name -> actors.1.name；system.title_name -> system.title_name。
+    /// actors[0].name -> actors.name；system.title_name -> system.title_name。
+    ///
+    /// **不带下标**，这是实测口径而不是风格选择：EasyRPG 0.8.1 的 RewriteDatabase
+    /// 只在 `ctxt.index >= 0` 时才查索引形态（"actors.1.name"），而 scalar 字段的
+    /// ctxt.index 恒为 -1 —— 索引分支根本不进。写了也是死条目，只让 PO 变大。
+    ///
+    /// 代价：同一句原文只有一种译法，不能按槽位区分（actors[0].name 与 actors[1].name
+    /// 同原文时只能共用一条译文）。actors/items 的原文天然能区分，可以接受。
     ///
     /// 只处理**一层深**：Player 的 sys 查表会跳过 parent->parent 不为空的上下文，
-    /// 三层以上（如 terms.basic[0]）只能落空 msgctxt 兜底，所以这里返回 ""。
+    /// 三层以上（如 system.terms.basic[0]）只能落空 msgctxt 兜底，所以这里返回 ""。
     static func context(for path: String) -> String {
         let parts = path.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard parts.count == 2 else { return "" }
         let parent = parts[0]
         let field = parts[1]
+        // 没有下标的父级（terms.command_item / system.title_name）原样保留。
         guard parent.hasSuffix("]"), let open = parent.lastIndex(of: "[") else {
             return parent + "." + field
         }
         let name = String(parent[parent.startIndex..<open])
-        let digits = parent[parent.index(after: open)..<parent.index(before: parent.endIndex)]
-        guard let index = Int(digits) else { return "" }
-        return name + "." + String(index + 1) + "." + field
+        return name + "." + field
     }
 
     // MARK: - 写文件
