@@ -31,6 +31,40 @@ struct LCFStringEntry: Equatable {
     let raw: Data
 }
 
+/// 引擎版本。判据是 liblcf 的 `db.system.ldb_id == 2003`（src/saveopt.cpp 的
+/// GetEngineVersion）——不是文件名、不是目录结构，也不是"有没有 classes"。
+enum RMEasyRPGVersion: String, CaseIterable {
+    case rm2000 = "2000"
+    case rm2003 = "2003"
+}
+
+/// C 回调只能是无捕获函数指针，所以收集器必须是独立对象（三张表共用同一个）。
+final class LCFStringCollector {
+    var entries: [LCFStringEntry] = []
+}
+
+/// 直接作为 lcf_*_for_each_string 的 cbfunc 传入。
+///
+/// 为什么是**全局函数**而不是 `LCFStringCollector.append`：Swift 只允许用
+/// `func` 或字面量闭包构成 C 函数指针，静态方法引用会报
+/// "a C function pointer can only be formed from a reference to a 'func'"。
+func lcfAppendString(
+    userdata: UnsafeMutableRawPointer?,
+    path: UnsafePointer<CChar>?,
+    bytes: UnsafePointer<CChar>?,
+    len: Int32
+) {
+    guard let userdata, let path else { return }
+    let collector = Unmanaged<LCFStringCollector>.fromOpaque(userdata).takeUnretainedValue()
+    let raw: Data
+    if let bytes, len > 0 {
+        raw = Data(bytes: bytes, count: Int(len))
+    } else {
+        raw = Data()
+    }
+    collector.entries.append(LCFStringEntry(path: String(cString: path), raw: raw))
+}
+
 /// 一个已加载的 RPG_RT.ldb。生命周期内持有 liblcf 的 Database 实例。
 ///
 /// 线程：非线程安全（底层句柄内部有缓存缓冲）。一个实例同一时刻只在一个线程上用。
@@ -65,21 +99,20 @@ final class LCFDatabase {
     var actorCount: Int { Int(lcf_db_actor_count(handle)) }
     var itemCount: Int { Int(lcf_db_item_count(handle)) }
 
+    /// 版本判定：读 system.ldb_id（2003 的库是 2003，2000 的库是 0）。
+    ///
+    /// 这个字段是 int32，不在 ForEachString 的文本字段里，所以走的是专门的 C 函数，
+    /// 不是 bytes(at: "system.ldb_id")（那条路径永远拿不到东西）。
+    func rmVersion() -> RMEasyRPGVersion {
+        return lcf_db_ldb_id(handle) == 2003 ? .rm2003 : .rm2000
+    }
+
     /// 遍历全部文本字段。顺序由 liblcf 反射决定（稳定：按结构体字段声明序 + 数组下标）。
     func allStrings() -> [LCFStringEntry] {
         guard let handle else { return [] }
-        let collector = Collector()
-        _ = lcf_db_for_each_string(handle, { userdata, path, bytes, len in
-            guard let userdata, let path else { return }
-            let collector = Unmanaged<Collector>.fromOpaque(userdata).takeUnretainedValue()
-            let raw: Data
-            if let bytes, len > 0 {
-                raw = Data(bytes: bytes, count: Int(len))
-            } else {
-                raw = Data()
-            }
-            collector.entries.append(LCFStringEntry(path: String(cString: path), raw: raw))
-        }, Unmanaged.passUnretained(collector).toOpaque())
+        let collector = LCFStringCollector()
+        _ = lcf_db_for_each_string(handle, lcfAppendString,
+                                   Unmanaged.passUnretained(collector).toOpaque())
         return collector.entries
     }
 
@@ -101,17 +134,42 @@ final class LCFDatabase {
     }
 
     /// 保存到指定路径（原样写回，不做编码转换）。
+    ///
+    /// **ldb_id 保护**：这里存的是**同一个**已加载的 Database，system.ldb_id 随文件
+    /// 带过来，所以 2003 的 battlecommands / classes / battleranimations 不会被丢。
+    /// 绝对不要改成"新建空 Database → 填字段 → Save"：那样 ldb_id = 0，2003 专有
+    /// chunk 会被当作 2k 数据**静默丢弃**，而 Save 仍然返回 true（无任何报错）。
     func save(to url: URL) throws {
         guard let handle else { throw LCFError.writeFailed(path: url.path) }
         guard lcf_db_save(handle, url.path, "") == 1 else {
             throw LCFError.writeFailed(path: url.path)
         }
     }
-
-    /// 回调里只允许无捕获的 C 函数指针，所以收集器必须是独立对象。
-    private final class Collector {
-        var entries: [LCFStringEntry] = []
-    }
 }
+
+// ---------------------------------------------------------------------------
+// 下一步：PO 导出（**尚未实现**，这里只留接口口径）
+//
+// EasyRPG 上游自带 gettext 运行时替换：--language <LANG> --language-path <PATH>
+// 会在内存里改写数据库，零写盘。所以给经典 RM 做汉化的出口是「翻译根目录 + PO」，
+// 而不是改 LDB。分组形状（rea 从 .so 的帮助串实测）：
+//
+//   PATH/<LANG>/meta.ini                  Name / Code / Term / GameTitle / Font（顶层键，无 section）
+//   PATH/<LANG>/rpg_rt.ldb.po             数据库词条（actors/skills/items/…）
+//   PATH/<LANG>/rpg_rt.ldb.common.po      公共事件（commonevents[N]…）
+//   PATH/<LANG>/rpg_rt.ldb.battle.po      战斗事件（troops[N]…）
+//   PATH/<LANG>/rpg_rt.lmt.po             地图名（maps[N].name / background_name）
+//   PATH/<LANG>/mapNNNN.po                逐地图事件（NNNN 取 LCFMapTreeInfo.mapIDs 的顺序）
+//
+// **分组标识不要塞进 FullTextEntry.source**：source 会被
+// TranslationCategory.inferred(source:path:) 用来推 category，而 category 决定
+// 提示词规则与 Segmenter 的 cacheKey profile —— 同一句原文出现在地图与公共事件里
+// 会拿到两个缓存键（重复计费、译文风格不一致）。分组只能从 path 前缀推导，
+// 或者另开一个 optional 字段。
+//
+// 另外两条已核过的语义（写 meta.ini 时用得上）：
+//   · ini 的键大小写不敏感（liblcf inireader 里整体 tolower），值不做处理；
+//   · 空值等于没写（GetString 取到空串返回默认值），不要写 "Font=" 期望覆盖默认。
+// ---------------------------------------------------------------------------
 
 #endif

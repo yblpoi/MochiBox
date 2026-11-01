@@ -37,8 +37,16 @@
 //   L23 文件没有膨胀（<= 原体积 1.05 倍）
 //   L24 打开不存在的文件抛 openFailed
 //   L25 打开非 LCF 文件抛 parseFailed
+//   L36 版本判据是 ldb_id：ldb_id=2003 且 classes 清空后仍报 2003（synthetic）
+//   L37 同一个库的顶层 chunk 里没有 0x1E/0x1F —— 按 chunk 判会误判成 2000（synthetic）
+//   L38 ldb_id=0 时塞进 classes/battleranimations → Save 返回 true 但回读为 0（synthetic）
+//   L39 同一个库的顶层 chunk 里也没有 0x1D/0x1E/0x1F —— 静默丢弃，不报错（synthetic）
+//   L40 chunk 扫描器自检：rm2000 的顶层 chunk 集合与 liblcf 已知布局一致
 //
-//  不验：地图（.lmu）与存档（.lsd）—— 数据层目前只做 .ldb；
+//  L36–L39 的文件由 lcf_synth.cpp 现场生成（不入库），见该文件头注释。
+//
+//  验：.ldb 的字段路径/写回/版本判定 + .lmu 的事件对话与地图树 .lmt 的 mapID/地图名；
+//  不验：存档（.lsd）—— 数据层目前不碰存档格式；
 //  事件命令的语义（哪条是 401、控制码怎么分段）由 Segmenter 与后续用例负责。
 //
 //  运行：node Tests/e2e/cases/contract/18_lcf_extract.mjs
@@ -72,16 +80,26 @@ struct LCFProbe {
         data.map { String(format: "%02x", $0) }.joined(separator: " ")
     }
 
+    /// 诊断信息，不计入断言数（TAP 消费者只认 ok/not ok）。
+    static func note(_ text: String) {
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            print("#   \(line)")
+        }
+    }
+
     static func main() {
         let args = CommandLine.arguments
-        guard args.count >= 3 else {
-            print("not ok 1 - argv 缺少 fixture 路径 # 断言不成立")
-            print("#   usage: lcf_probe <rm2000.ldb> <rm2003.ldb>")
+        guard args.count >= 5 else {
+            print("not ok 1 - argv 缺少路径 # 断言不成立")
+            print("#   usage: lcf_probe <rm2000.ldb> <rm2003.ldb> <synth_empty_2k3.ldb> <synth_2k_with_classes.ldb>")
             print("1..1")
             exit(1)
         }
         do {
-            try run(rm2000: URL(fileURLWithPath: args[1]), rm2003: URL(fileURLWithPath: args[2]))
+            try run(rm2000: URL(fileURLWithPath: args[1]),
+                    rm2003: URL(fileURLWithPath: args[2]),
+                    synthEmpty2k3: URL(fileURLWithPath: args[3]),
+                    synth2kWithClasses: URL(fileURLWithPath: args[4]))
         } catch {
             check("LX", "探针执行中断", false, "\(error)")
         }
@@ -92,7 +110,7 @@ struct LCFProbe {
 
     // MARK: - 主体
 
-    static func run(rm2000: URL, rm2003: URL) throws {
+    static func run(rm2000: URL, rm2003: URL, synthEmpty2k3: URL, synth2kWithClasses: URL) throws {
         let db = try LCFDatabase(contentsOf: rm2000)
         let entries = db.allStrings()
         let nonEmpty = entries.filter { !$0.raw.isEmpty }
@@ -238,22 +256,22 @@ struct LCFProbe {
         let copy3 = work.appendingPathComponent("RPG_RT_2003.ldb")
         try FileManager.default.copyItem(at: rm2003, to: copy3)
         let editor3 = try LCFDatabase(contentsOf: copy3)
-        let heroNameBefore = try editor3.bytes(at: "classes[0].name")
-        let battlerBefore = try editor3.bytes(at: "battleranimations[0].name")
+        let heroNameBefore = editor3.bytes(at: "classes[0].name")
+        let battlerBefore = editor3.bytes(at: "battleranimations[0].name")
         try editor3.setBytes(Data("Mochi".utf8), at: "items[0].name")
         try editor3.save(to: copy3)
 
         let reopened3 = try LCFDatabase(contentsOf: copy3)
-        let heroNameAfter = try reopened3.bytes(at: "classes[0].name")
-        let battlerAfter = try reopened3.bytes(at: "battleranimations[0].name")
+        let heroNameAfter = reopened3.bytes(at: "classes[0].name")
+        let battlerAfter = reopened3.bytes(at: "battleranimations[0].name")
         check("L26", "2003 保存后 ldb_id 仍为 2003（classes/battleranimations 未被静默丢弃）",
               heroNameAfter == heroNameBefore && battlerAfter == battlerBefore
                 && heroNameBefore == Data("Hero A".utf8),
               "classes: \(heroNameBefore.map(hex) ?? "nil") -> \(heroNameAfter.map(hex) ?? "nil")\n"
               + "battleranimations: \(battlerBefore.map(hex) ?? "nil") -> \(battlerAfter.map(hex) ?? "nil")")
 
-        let written3 = try reopened3.bytes(at: "items[0].name")
-        let untouched3 = try reopened3.bytes(at: "skills[0].using_message1")
+        let written3 = reopened3.bytes(at: "items[0].name")
+        let untouched3 = reopened3.bytes(at: "skills[0].using_message1")
         check("L27", "2003 写回：改过的字段读回一致、未改的日文字段逐字节不变",
               written3 == Data("Mochi".utf8) && untouched3 == wantSkill3,
               "written=\(written3.map(hex) ?? "nil")\nuntouched=\(untouched3.map(hex) ?? "nil")\n"
@@ -269,5 +287,184 @@ struct LCFProbe {
         var parseFailed = false
         do { _ = try LCFDatabase(contentsOf: junk) } catch LCFError.parseFailed { parseFailed = true }
         check("L25", "打开非 LCF 文件抛 parseFailed", parseFailed, "没有抛 parseFailed")
+
+        // ---- 地图（.lmu） ----
+        // 路径口径与 LDB 一致（liblcf 的反射上下文同一种拼法）。注意字段名是
+        // event_commands 而不是编辑器里显示的 list —— 以 liblcf 的 schema 为准。
+        let mapUrl2000 = rm2000.deletingLastPathComponent().appendingPathComponent("Map0001.lmu")
+        let map2000 = try LCFMapFile(contentsOf: mapUrl2000)
+        let mapStrings = map2000.allStrings()
+        let eventCommandPaths = mapStrings.filter {
+            $0.path.range(of: "^events\\[\\d+\\]\\.pages\\[\\d+\\]\\.event_commands\\[\\d+\\]\\.string$",
+                           options: .regularExpression) != nil
+        }
+        check("L28", "rm2000 Map0001 提取到事件对话 > 100 条",
+              eventCommandPaths.count > 100,
+              "event_commands=\(eventCommandPaths.count) total=\(mapStrings.count)")
+
+        var sampleEvent: (path: String, text: String)?
+        for entry in eventCommandPaths where !entry.raw.isEmpty {
+            if let decoded = try? LCFTextCodec.decode(entry.raw) {
+                sampleEvent = (entry.path, decoded.text)
+                break
+            }
+        }
+        if let sampleEvent {
+            note("rm2000 地图样本: \(sampleEvent.path) = \(sampleEvent.text)")
+        }
+        check("L29", "地图事件文本可按路径解出", sampleEvent != nil,
+              "event_commands 里没有解得出文本的条目")
+
+        // 控制码必须原样保留：翻译链路靠 \s[1] 这类码来定字号/停顿，剥掉就改了语义。
+        // 这里钉死一条真实样本（EasyRPG/TestGame 的 "Testing message speed:" 系列）。
+        let escapeBytes = Data([0x5C, 0x73, 0x5B, 0x31, 0x5D]) // 字面量 \s[1]
+        let escapeRaw = Data("\\s[1]Speed 1".utf8)
+        let escapeEntry = mapStrings.first { $0.raw == escapeRaw }
+        check("L30", "含 \\s[1] 控制码的原文逐字节原样保留（不剥码）",
+              escapeEntry != nil && escapeEntry!.raw.range(of: escapeBytes) != nil,
+              "没有找到 \\s[1]Speed 1 的原文；含 \\s[1] 的条数=\(mapStrings.filter { $0.raw.range(of: escapeBytes) != nil }.count)")
+
+        // ---- 地图树（.lmt） ----
+        let treeUrl2000 = rm2000.deletingLastPathComponent().appendingPathComponent("RPG_RT.lmt")
+        let tree2000 = try LCFMapTreeInfo.load(contentsOf: treeUrl2000)
+        check("L31", "rm2000 RPG_RT.lmt 的 mapID 列表非空且含地图 1",
+              tree2000.mapIDs.count > 1 && tree2000.mapIDs.contains(1),
+              "ids=\(tree2000.mapIDs.count) 前 8 个=\(tree2000.mapIDs.prefix(8))")
+        check("L31b", "rm2000 RPG_RT.lmt 提取到地图名文本", !tree2000.strings.isEmpty,
+              "strings=\(tree2000.strings.count)")
+        if let firstNamed = tree2000.strings.first(where: { !$0.raw.isEmpty }),
+           let decoded = try? LCFTextCodec.decode(firstNamed.raw) {
+            note("lmt 样本: \(firstNamed.path) = \(decoded.text)")
+        }
+
+        // ---- 版本判定（liblcf: system.ldb_id == 2003） ----
+        check("L32", "RM2000 样本判为 2000、RM2003 样本判为 2003",
+              db.rmVersion() == .rm2000 && db3.rmVersion() == .rm2003,
+              "rm2000=\(db.rmVersion().rawValue) rm2003=\(db3.rmVersion().rawValue)")
+        // 写回后再判一次：ldb_id 是随文件带过来的，换版本会静默丢 2003 chunk（L26 的根因）。
+        check("L32b", "写回并重开后版本不变（ldb_id 未被归零）",
+              reopened.rmVersion() == .rm2000 && reopened3.rmVersion() == .rm2003,
+              "rm2000=\(reopened.rmVersion().rawValue) rm2003=\(reopened3.rmVersion().rawValue)")
+
+        // ---- 反向守卫：encoding 恒为直通 ----
+        // GB18030 里 0x81 是合法前导（「丂」= 81 40），而它在 Shift-JIS / cp1252 下
+        // 不是同一个字。整条链路（写 → 存 → 重开 → 读）必须逐字节相等：
+        // 只要中途有一处按 ICU/1252 转码，这 2 个字节就会变。
+        let gbk81 = try LCFTextCodec.encode("丂", as: .gb18030)
+        let copy81 = work.appendingPathComponent("RPG_RT_81.ldb")
+        try FileManager.default.copyItem(at: rm2000, to: copy81)
+        let editor81 = try LCFDatabase(contentsOf: copy81)
+        try editor81.setBytes(gbk81, at: "items[0].name")
+        try editor81.save(to: copy81)
+        let reopened81 = try LCFDatabase(contentsOf: copy81)
+        let read81 = reopened81.bytes(at: "items[0].name")
+        check("L33", "GBK 0x81 前导字节经保存往返不变（证明没有 cp1252/UTF-8 转码）",
+              gbk81.first == 0x81 && read81 == gbk81,
+              "写入=\(hex(gbk81)) 读回=\(read81.map(hex) ?? "nil")")
+
+        // ---- 2003 地图：加载 + 按 2003 格式写回 ----
+        let mapUrl2003 = rm2003.deletingLastPathComponent().appendingPathComponent("Map0001.lmu")
+        let map2003 = try LCFMapFile(contentsOf: mapUrl2003)
+        let strings2003Map = map2003.allStrings()
+        check("L34", "rm2003 Map0001 能加载且提取到 > 100 条文本",
+              strings2003Map.count > 100, "total=\(strings2003Map.count)")
+
+        let mapCopy3 = work.appendingPathComponent("Map0001.lmu")
+        try FileManager.default.copyItem(at: mapUrl2003, to: mapCopy3)
+        let mapEditor3 = try LCFMapFile(contentsOf: mapCopy3)
+        let firstEventPath = strings2003Map.first {
+            $0.path.range(of: "^events\\[\\d+\\]\\.pages\\[\\d+\\]\\.event_commands\\[\\d+\\]\\.string$",
+                           options: .regularExpression) != nil
+        }?.path
+        let marker = Data("MochiBox map probe".utf8)
+        if let firstEventPath { try mapEditor3.setBytes(marker, at: firstEventPath) }
+        try mapEditor3.save(to: mapCopy3, engine: .rm2003)
+        let mapReopened = try LCFMapFile(contentsOf: mapCopy3)
+        let mapReadBack = firstEventPath.flatMap { mapReopened.bytes(at: $0) }
+        check("L35", "2003 地图按 2003 格式写回后可重开，改过的文本读回一致",
+              firstEventPath != nil && mapReadBack == marker
+                && mapReopened.allStrings().count == strings2003Map.count,
+              "path=\(firstEventPath ?? "nil") readBack=\(mapReadBack.map(hex) ?? "nil") "
+              + "count=\(mapReopened.allStrings().count) want=\(strings2003Map.count)")
+
+        // ---- 版本判据：ldb_id，而不是"扫得到 classes 就是 2003"（synthetic）----
+        //
+        // L13/L14 只证明了"有 2k3 结构 → 是 2003"。真正的坑在另外两边：
+        //   · 2003 库把 classes 清空后 chunk 会消失 → 按 chunk 判会把 2003 误判成 2000；
+        //   · 2000 库塞进 classes 会被 writer 静默丢弃 → Save 返回 true 但数据没了。
+        // 两个库都由 lcf_synth.cpp 现场造（不入库），验证完随临时目录一起删。
+        let synthClassPrefixes = ["classes[", "battleranimations["]
+        func synthClassPaths(_ db: LCFDatabase) -> [String] {
+            db.allStrings().map(\.path).filter { p in synthClassPrefixes.contains { p.hasPrefix($0) } }
+        }
+
+        let emptied = try LCFDatabase(contentsOf: synthEmpty2k3)
+        check("L36", "ldb_id=2003 且 classes 清空后仍报 2003", emptied.rmVersion() == .rm2003,
+              "version=\(emptied.rmVersion()) classPaths=\(synthClassPaths(emptied).count)")
+
+        let emptiedChunks = try topLevelChunkIDs(synthEmpty2k3)
+        check("L37", "同一个库的顶层 chunk 里没有 0x1E/0x1F（按 chunk 判会误判成 2000）",
+              !emptiedChunks.contains(0x1E) && !emptiedChunks.contains(0x1F),
+              "chunks=\(emptiedChunks.map { String(format: "0x%02X", $0) })")
+
+        let injected = try LCFDatabase(contentsOf: synth2kWithClasses)
+        check("L38", "ldb_id=0 时塞进 classes/battleranimations，Save 成功但回读为 0",
+              injected.rmVersion() == .rm2000 && synthClassPaths(injected).isEmpty,
+              "version=\(injected.rmVersion()) classPaths=\(synthClassPaths(injected).count)")
+
+        let injectedChunks = try topLevelChunkIDs(synth2kWithClasses)
+        check("L39", "同一个库的顶层 chunk 里也没有 0x1D/0x1E/0x1F（静默丢弃，不报错）",
+              !injectedChunks.contains(0x1D) && !injectedChunks.contains(0x1E) && !injectedChunks.contains(0x1F),
+              "chunks=\(injectedChunks.map { String(format: "0x%02X", $0) })")
+
+        // 扫描器自检：这一段要是错的，L37/L39 的"不存在"就毫无意义。
+        let baseChunks = try topLevelChunkIDs(rm2000)
+        let expectedChunks: Set<Int> = [0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
+                                        0x15, 0x16, 0x17, 0x18, 0x19]
+        check("L40", "chunk 扫描器自检：rm2000 的顶层 chunk 集合与已知布局一致",
+              Set(baseChunks) == expectedChunks,
+              "got=\(baseChunks.map { String(format: "0x%02X", $0) })")
+    }
+
+    // MARK: - 顶层 chunk 扫描
+
+    /// 读 LDB 的**顶层 chunk id 列表**（只跳块，不解析内容）。
+    ///
+    /// 格式见 vendor/liblcf-src/src/reader_lcf.cpp:86-105：整数是"7 位一组、高位续"的
+    /// **大端**变长编码（不是小端 LEB128）。文件 = [变长 header 长度][header 字节]，
+    /// 之后重复 [变长 chunk id][变长 chunk 长度][payload]。
+    ///
+    /// 为什么不直接搜字节：id 与长度都是变长的，裸搜 0x1E 会把 payload 里的任意字节
+    /// 也算进去。这里是独立于 liblcf 的一份实现，用来交叉验证 L37/L39。
+    static func topLevelChunkIDs(_ url: URL) throws -> [Int] {
+        let bytes = [UInt8](try Data(contentsOf: url))
+        var i = 0
+        guard let headerLength = readVarInt(bytes, &i), headerLength >= 0,
+              i + headerLength <= bytes.count else { return [] }
+        i += headerLength
+        var ids: [Int] = []
+        while i < bytes.count {
+            guard let id = readVarInt(bytes, &i),
+                  let length = readVarInt(bytes, &i), length >= 0,
+                  i + length <= bytes.count else { break }
+            ids.append(id)
+            i += length
+        }
+        return ids
+    }
+
+    /// 读一个 LCF 变长整数（大端、7 位一组、最高位表示续）。越界或过长返回 nil。
+    static func readVarInt(_ bytes: [UInt8], _ index: inout Int) -> Int? {
+        var value = 0
+        var loops = 0
+        while true {
+            guard index < bytes.count else { return nil }
+            let byte = bytes[index]
+            index += 1
+            value = (value << 7) | Int(byte & 0x7F)
+            loops += 1
+            if byte & 0x80 == 0 { return value }
+            if loops > 5 { return nil }
+        }
     }
 }
