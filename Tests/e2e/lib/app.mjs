@@ -360,6 +360,7 @@ function attachStream(handle, stream, key, targetKey) {
  *
  * @param {{
  *   gameDir?: string,
+ *   playNative?: boolean,   // true → --play-native（原生运行时链路；默认 --play）
  *   args?: string[],
  *   env?: Record<string,string>,
  *   dataDir?: string,
@@ -380,7 +381,9 @@ export function spawnApp(options = {}) {
   if (!fs.existsSync(dataDir)) { fs.mkdirSync(dataDir, { recursive: true }); }
 
   const args = [];
-  if (options.gameDir) { args.push('--play', options.gameDir); }
+  // `playNative: true` 走 --play-native（原生运行时链路，没有 CDP/静态服务）。
+  // 默认仍是 --play：kernel/faults 的既有断言全部建立在这条命令上。
+  if (options.gameDir) { args.push(options.playNative ? '--play-native' : '--play', options.gameDir); }
   if (options.controlPath) { args.push('--control', options.controlPath); }
   if (options.duration !== undefined) { args.push('--duration', String(options.duration)); }
   if (options.out) { args.push('--out', options.out); }

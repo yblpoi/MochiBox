@@ -639,6 +639,11 @@ enum AttachCLI {
         // 漏了这两条 `--play-native` 会掉回 exit 1 且不打 `error_code:` 行。
         .runtimeMissing,
         .runtimeNotExecutable,
+        // 游戏目录自身的问题：缺 Game.ini / Library 与引擎不符。它们*不是*"重装运行时就
+        // 能好"的环境缺口，但**是** `--play-native` 的启动失败 —— 脚本按码分支靠的就是
+        // `error_code:` 这一行（退出码 1 时连这一行都没有，等于什么都判不出来）。
+        .gameIniMissing,
+        .runtimeVersionMismatch,
         // v0.4 内置内核（架构 v0.4 §5.3，硬约束 #4）：
         // 无 Aqua 会话 / WKWebView 起不来，两者都是"换台干净的有桌面的 Mac 可能就好"的
         // 环境缺口。漏了这两条，`--play` 会掉回 exit 1 且不打 `error_code:` 行。
