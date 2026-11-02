@@ -45,7 +45,8 @@
 - **过程中确认的一条运行时事实**：EasyRPG 0.8.1 的 PO 只认**非索引** `msgctxt`
   （scalar 字段的 `ctxt.index` 恒为 -1），`actors.1.name` 这类索引形态全部落空。
 - **限制**：
-  - 没有真实 GBK 汉化样本（上游不存在可分发的 `.ldb`），GBK 判据只有合成覆盖。
+  - 没有真实 GBK 汉化样本（上游不存在可分发的 `.ldb`），GBK 判据只有合成覆盖 ——
+    依据、现存覆盖与残留风险见 [known-limits.md#L1](known-limits.md#L1)。
   - 只有静态 PO 路径：游戏内无实时文本通道，脚本生成的内容盖不住。
 
 ### RPG Maker XP（RGSS1）

@@ -121,7 +121,7 @@ ENTRY_TABLE = [
 
 ## 4. Ruby 环境
 
-mkxp-z 2.4.2（`2.4.2/f02d586`）实测 Ruby 3.1.3：
+mkxp-z 2.4.2（`2.4.2/f02d586`）实测 Ruby 3.1.3（版本被上游锁定的原因见 [known-limits.md#L3](known-limits.md#L3)）：
 
 | 库 | 结果 | 说明 |
 |---|---|---|
@@ -330,7 +330,8 @@ VERSION="RGSS3"  RENDERED=["【中文测试】"]
    最后一档兜底：能被 CP932 解成“合法文本”的 GB18030 字节流仍可能解错。三档都解不了的字节流
    会走 PENDING 显示原文。RGSS1/2 的 CP932 原文在 PENDING 时会被**重编码成 UTF-8** 再回给
    hook —— 当前 mkxp-z 构建的 `Window_Message` 直接处理 CP932 原串会抛
-   `invalid byte sequence in UTF-8`（§8.1 有实测）。
+   `invalid byte sequence in UTF-8`（§8.1 有实测）。**GBK 侧没有真实样本**，三档解码的准确率只能用
+   繁体（Big5）与日文（CP932）工程估，见 [known-limits.md#L1](known-limits.md#L1)。
 5. **字体。** 译文含中文时需要 CJK 字体；测试机有 `Primary font not found: Arial` 警告，但中文
    仍正常渲染（mkxp-z 回退字体）。
 6. **延迟（已改为异步）。** 请求不再跑在游戏主线程上：桥 120ms 到点就回 `PENDING + 原文`，
