@@ -95,6 +95,11 @@ actor GameLauncher {
     private var webServers: [String: StaticWebServer] = [:]
     /// 已经 terminate 过的会话键（`terminate` 幂等：第二次不得去 kill 一个可能被复用的 pid）。
     private var terminatedSessions: Set<String> = []
+    /// mkxp-z 的 `mkxp.json` 覆盖现场（pid → 还原所需的一切）。
+    ///
+    /// 只在这里留引用：`terminate` 是唯一能保证"进程已经不在读配置"的收口点，
+    /// 启动失败的分支自己就地还原（那时还没有 pid）。
+    private var mkxpOverlays: [Int32: MKXPZGameConfig.Overlay] = [:]
 
     private let webPorts: WebPortAssignments
     /// 运行期目录（`--selftest` 用临时根注入，保证不写用户目录）。
@@ -760,8 +765,12 @@ actor GameLauncher {
     /// 不传任何参数：mkxp-z 的 argv 只认 `debug` / `test` / `btest` 三个词，其余会被塞进
     /// Ruby 的 `$ARGV`；`--no-audio` 之类并不存在，传了等于给游戏塞脏参数。
     ///
-    /// 存档位置沿用 mkxp-z 自己的 pref 目录（按 `dataPathOrg`/`dataPathApp`），本产品不做
-    /// 按 gameHash 的隔离 —— 那需要 `mkxp.json`，而配置文件按设计不可写（见上）。
+    /// 每游戏数据目录：启动前在 `<gameRoot>/mkxp.json` 里注入
+    /// `dataPathOrg`/`dataPathApp`（见 `MKXPZGameConfig`），退出时还原。
+    /// 注入失败不挡启动，但一定留痕（会话日志 + NSLog）。
+    ///
+    /// **不承诺搬走 RGSS 存档**：mkxp-z 的 `Kernel#save_data` 按进程 cwd 写文件，
+    /// 没有 savePath/环境变量入口；这里能隔离的是 mkxp-z 自己的每游戏数据目录。
     private func launchMKXPZ(
         executable: URL,
         engine: EngineKind,
@@ -775,11 +784,26 @@ actor GameLauncher {
         let logURL = paths.logsDirectory
             .appendingPathComponent("mkxpz-\(Timestamp.fileStamp())-\(gameHash.prefix(8)).log")
 
+        // 每游戏数据目录的注入必须发生在 `Process.run()` **之前**：mkxp-z 只在 Config::read
+        // 读一次 cwd 下的 mkxp.json，进程起来之后再写等于没写。
+        let preparation = MKXPZGameConfig.prepare(
+            gameRoot: gameRoot,
+            gameHash: gameHash,
+            stateRoot: paths.root
+        )
+        if let note = preparation.note {
+            log?.warn("GameLauncher", "mkxp.json 未注入", ["reason": note])
+            // `--play-native` 没有 SessionLog，失败原因只能走系统日志；静默失败等于"隔离悄悄没生效"。
+            NSLog("MochiBox: mkxp.json 未注入：%@", note)
+        }
+
         log?.info("GameLauncher", "启动 mkxp-z", [
             "exe": executable.path,
             "engine": engine.rawValue,
             "cwd": gameRoot.path,
-            "gameHash": gameHash
+            "gameHash": gameHash,
+            "pref": MKXPZGameConfig.applicationName(gameHash: gameHash),
+            "configInjected": preparation.overlay == nil ? "0" : "1"
         ])
 
         let process: Process
@@ -791,6 +815,10 @@ actor GameLauncher {
                 logURL: logURL
             ).process
         } catch {
+            // 进程没起来：覆盖必须当场还原，否则用户的 mkxp.json 会一直带着我们的两个键。
+            if let overlay = preparation.overlay {
+                _ = MKXPZGameConfig.restore(overlay)
+            }
             throw MochiBoxError(
                 code: .runtimeNotExecutable,
                 message: "内置 mkxp-z 运行时启动失败：\(error.localizedDescription)",
@@ -800,6 +828,9 @@ actor GameLauncher {
 
         running[process.processIdentifier] = process
         ChildProcessRegistry.shared.register(process.processIdentifier)
+        if let overlay = preparation.overlay {
+            mkxpOverlays[process.processIdentifier] = overlay
+        }
         let handle = LaunchHandle(
             pid: process.processIdentifier,
             port: 0,
@@ -1152,6 +1183,19 @@ actor GameLauncher {
         }
         usedPorts.remove(handle.port)
         ChildProcessRegistry.shared.unregister(handle.pid)
+        restoreMKXPOverlay(pid: handle.pid)
+    }
+
+    /// 还原 mkxp-z 的 `mkxp.json` 覆盖（没登记过就是空操作）。
+    ///
+    /// 位置在通用 pid 收尾里：`--play-native`、GUI 的 `MKXPZAdapter.stop`、以及
+    /// "进程自己先退出、随后才 terminate" 都走这里。进程被 SIGKILL / 本进程崩溃时走不到，
+    /// 那种残骸由下一次 `MKXPZGameConfig.prepare` 的崩溃恢复兜住。
+    private func restoreMKXPOverlay(pid: Int32) {
+        guard let overlay = mkxpOverlays.removeValue(forKey: pid) else { return }
+        if let note = MKXPZGameConfig.restore(overlay) {
+            NSLog("MochiBox: mkxp.json 还原提示：%@", note)
+        }
     }
 
     /// Web 句柄的终止：幂等（第二次直接返回，绝不 kill 一个可能已被复用的 pid）。

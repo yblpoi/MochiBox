@@ -587,6 +587,135 @@ extension SelfTestRunner {
                     forLibrary: try GameLauncher.mkxpzGameIniLibrary(gameRoot: utf16)
                 ), .rgss2, "UTF-16LE 的 Game.ini")
             },
+            SelfTestCase(group: "F", name: "mkxpz_pref_config_create_and_restore") { context in
+                // 没有 mkxp.json 的游戏目录：注入 → 目录按 gameHash 分家 → 退出把文件删掉。
+                // 判据是**文件内容 + 文件是否存在**，不是"prepare 没抛错"。
+                let root = try directory(context, "f_mkxpz_pref_new")
+                let stateRoot = try directory(context, "f_mkxpz_pref_new_state")
+                let prepared = MKXPZGameConfig.prepare(
+                    gameRoot: root, gameHash: "0123456789abcdef", stateRoot: stateRoot
+                )
+                try expect(prepared.note == nil, "没有 mkxp.json 时必须注入成功，实际：\(prepared.note ?? "nil")")
+                guard let overlay = prepared.overlay else {
+                    throw SelfTestFailure(message: "注入成功却没有还原现场")
+                }
+                try expectEqual(overlay.original, nil, "原文件不存在时 original 必须为 nil")
+
+                let configURL = root.appendingPathComponent("mkxp.json")
+                let text = try String(contentsOf: configURL, encoding: .utf8)
+                try expect(text.contains("\"dataPathOrg\": \"MochiBox\""),
+                           "pref 目录必须收进 MochiBox 自己的组织目录，实际：\(text)")
+                try expect(text.contains("\"dataPathApp\": \"mkxpz-0123456789abcdef\""),
+                           "pref 目录必须按 gameHash 分家，实际：\(text)")
+
+                _ = MKXPZGameConfig.restore(overlay)
+                try expect(!FileManager.default.fileExists(atPath: configURL.path),
+                           "退出后必须删掉我们建的 mkxp.json")
+                try expect(!FileManager.default.fileExists(atPath: overlay.stateDirectory.path),
+                           "退出后状态目录必须清掉")
+            },
+            SelfTestCase(group: "F", name: "mkxpz_pref_config_merge_and_restore") { context in
+                // 用户自己的 mkxp.json：注释、尾逗号、同名字段全在。合并后必须
+                //   · 我们的两个键排在**用户键之前**（json5pp 用 std::map::emplace，先到先得）；
+                //   · 用户的键与注释一个不丢；
+                //   · 退出后逐字节还原。
+                let root = try directory(context, "f_mkxpz_pref_merge")
+                let stateRoot = try directory(context, "f_mkxpz_pref_merge_state")
+                let user = """
+                // 用户自己的配置，注释里还有 {gameFolder}
+                {
+                  "dataPathApp": "my-own-dir",
+                  "winResizable": false,
+                }
+                """
+                try touch(root, "mkxp.json", contents: user)
+                let configURL = root.appendingPathComponent("mkxp.json")
+                let original = try Data(contentsOf: configURL)
+
+                let prepared = MKXPZGameConfig.prepare(
+                    gameRoot: root, gameHash: "fedcba9876543210", stateRoot: stateRoot
+                )
+                try expect(prepared.note == nil, "可合并的文件不该被跳过，实际：\(prepared.note ?? "nil")")
+                guard let overlay = prepared.overlay else {
+                    throw SelfTestFailure(message: "注入成功却没有还原现场")
+                }
+
+                let merged = try String(contentsOf: configURL, encoding: .utf8)
+                guard let ours = merged.range(of: "\"dataPathApp\": \"mkxpz-"),
+                      let theirs = merged.range(of: "\"dataPathApp\": \"my-own-dir\"") else {
+                    throw SelfTestFailure(message: "合并结果缺少 dataPathApp，实际：\(merged)")
+                }
+                try expect(ours.lowerBound < theirs.lowerBound,
+                           "我们的 dataPathApp 必须排在用户的前面（先到先得），实际：\(merged)")
+                try expect(merged.contains("// 用户自己的配置"), "注释必须原样保留，实际：\(merged)")
+                try expect(merged.contains("\"winResizable\": false"), "用户其它键必须保留，实际：\(merged)")
+
+                _ = MKXPZGameConfig.restore(overlay)
+                try expectEqual(try Data(contentsOf: configURL), original,
+                                "退出后必须逐字节还原用户原文件")
+
+                // 空对象：插入后带的尾逗号靠 JSON5 的 trailing_comma 规则合法（不是笔误）。
+                try expectEqual(MKXPZGameConfig.merge(text: "{}", org: "O", app: "A"),
+                                "{\n    \"dataPathOrg\": \"O\",\n    \"dataPathApp\": \"A\"}",
+                                "空对象的合并结果（空对象不留尾逗号）")
+                try expectEqual(MKXPZGameConfig.merge(text: "// 只有注释\n{\n}", org: "O", app: "A"),
+                                "// 只有注释\n{\n    \"dataPathOrg\": \"O\",\n    \"dataPathApp\": \"A\"\n}",
+                                "只有注释的空对象也不留尾逗号")
+                // BOM + 注释里的花括号：必须插在真正的对象开头，不能被注释里的 `{` 骗到。
+                let trick = "\u{FEFF}// 提示：{gameFolder}\n{\n  \"winResizable\": true\n}\n"
+                let trickMerged = MKXPZGameConfig.merge(text: trick, org: "O", app: "A")
+                // String(data:encoding:) 解码时会把 BOM 吃掉，这里只断言"插入点选对了"：
+                // 我们的键必须紧跟对象自己的 `{`，而不是注释里那个 `{gameFolder}`。
+                try expect(trickMerged?.contains("// 提示：{gameFolder}\n{\n    \"dataPathOrg\": \"O\",") == true,
+                           "注释里的花括号不能当作对象开头，实际：\(trickMerged ?? "nil")")
+            },
+            SelfTestCase(group: "F", name: "mkxpz_pref_config_crash_recovery") { context in
+                // 进程被 SIGKILL（还原没跑到）：下一次启动必须按**最初**的原文件恢复，
+                // 不能把上一次注入过的内容当成"原文件"再套一层。
+                let root = try directory(context, "f_mkxpz_pref_crash")
+                let stateRoot = try directory(context, "f_mkxpz_pref_crash_state")
+                let user = "{\n  \"winResizable\": false\n}\n"
+                try touch(root, "mkxp.json", contents: user)
+                let configURL = root.appendingPathComponent("mkxp.json")
+                let original = try Data(contentsOf: configURL)
+
+                let first = MKXPZGameConfig.prepare(
+                    gameRoot: root, gameHash: "aaaabbbbccccdddd", stateRoot: stateRoot
+                )
+                try expect(first.overlay != nil, "第一次注入必须成功")
+
+                // 崩溃：不调用 restore，直接重来一次。
+                let second = MKXPZGameConfig.prepare(
+                    gameRoot: root, gameHash: "aaaabbbbccccdddd", stateRoot: stateRoot
+                )
+                guard let overlay = second.overlay else {
+                    throw SelfTestFailure(message: "崩溃恢复后必须能重新注入")
+                }
+                let merged = try String(contentsOf: configURL, encoding: .utf8)
+                try expectEqual(merged.components(separatedBy: "\"dataPathApp\"").count - 1, 1,
+                                "崩溃恢复后只应有一份 dataPathApp（实际：\(merged)）")
+                try expect(merged.contains("\"winResizable\": false"), "用户键必须保留，实际：\(merged)")
+
+                _ = MKXPZGameConfig.restore(overlay)
+                try expectEqual(try Data(contentsOf: configURL), original,
+                                "崩溃后仍要能逐字节还原最初的文件")
+            },
+            SelfTestCase(group: "F", name: "mkxpz_pref_config_non_object_skipped") { context in
+                // 顶层不是对象：mkxp-z 本来就会把这个文件当空配置。我们不去改一个看不懂的文件，
+                // 但必须给出原因（否则"隔离没生效"会静默发生）。
+                let root = try directory(context, "f_mkxpz_pref_nonobject")
+                let stateRoot = try directory(context, "f_mkxpz_pref_nonobject_state")
+                try touch(root, "mkxp.json", contents: "[\"not\", \"an\", \"object\"]\n")
+                let configURL = root.appendingPathComponent("mkxp.json")
+                let original = try Data(contentsOf: configURL)
+
+                let prepared = MKXPZGameConfig.prepare(
+                    gameRoot: root, gameHash: "1111222233334444", stateRoot: stateRoot
+                )
+                try expect(prepared.overlay == nil, "顶层不是对象时不得注入")
+                try expect(prepared.note != nil, "跳过必须给出原因")
+                try expectEqual(try Data(contentsOf: configURL), original, "跳过时不得改动文件")
+            },
             SelfTestCase(group: "F", name: "rgss_launch_backend") { context in
                 // 三代都必须有后端（此前是 nil：库里显示"暂不支持"，点了也没反应）。
                 for engine in [EngineKind.rgss1, .rgss2, .rgss3] {
