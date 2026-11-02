@@ -11,6 +11,9 @@
 //     M-L1-VXA-*  第三份真实样本是 CC0 的 VX Ace 工程：27 个文件逐个可解析、
 //              往返字节完全相同、文本 1463 条（门槛 > 50）、Terms 是 4 个容器
 //              且能取到值（basic[0]="Level"）、事件层非空（236 条）、浮点带 RGSS3 尾随字节。
+//     M-L1-<ver>-VIEW-*  CommonEvents / Troops 顶层都是 Array（索引 0 为 nil，XP 也一样）：
+//              视图解出 XP 1/32、VX 10/30、VXA 10/30 条，每条非空字段 > 0；
+//              M-VIEW-CONTAINER 另证单对象 / 含 nil 数组 / 空数组 / nil 根四种形态。
 //
 //   Level-2 合成样本（Fixtures/rmxp|rmvx|rmvxace）—— 证文本路径与编码/边界
 //     M-L2-*   101/401/102/402/404/405 路径与文本、三版本各不相同的用语表形状、
@@ -89,6 +92,7 @@ struct MarshalProbe {
                         mapSize: (100, 100, 3, 30000))
         realVXAceSample(reporter)
         realGameIni(reporter)
+        databaseCollections(reporter)
 
         // Level-2：合成样本
         synthesizedFixtures(reporter)
@@ -485,6 +489,76 @@ struct MarshalProbe {
                 "OpenXP 的 Game.ini 是 Library=RGSS104E.dll，且包含 EngineDetector 的 needle Library=RGSS1",
                 ini.contains("Library=RGSS104E.dll") && ini.contains("Library=RGSS1"),
                 "实际内容: \(ini.replacingOccurrences(of: "\n", with: " | "))")
+    }
+
+    // MARK: - M-L1-VIEW 数据库文件的容器形态
+    //
+    // 实测：XP / VX / VX Ace 的 CommonEvents 与 Troops 顶层都是 Array（索引 0 为 nil、
+    // 其余是记录）—— 不是"VX 才改成数组、XP 是单对象"。视图本身只包一条记录，
+    // 容器必须由 entries(from:) 拆；修复前 init?(root) 直接返回 nil，这 6 个文件全是 0 条。
+    //
+    // 期望条数是 fixture 实测值，不是"非零即可"：CommonEvents XP 1 / VX 10 / VXA 10，
+    // Troops XP 32 / VX 30 / VXA 30。每条再查一次非空字段数，避免视图只数出空壳。
+
+    static func databaseCollections(_ r: Reporter) {
+        let specs: [(tag: String, base: String, ext: String, commonEvents: Int, troops: Int)] = [
+            ("XP", "Fixtures/rmxp-real/Data", "rxdata", 1, 32),
+            ("VX", "Fixtures/rmvx-real/Data", "rvdata", 10, 30),
+            ("VXA", "Fixtures/rmvxace-real/Data", "rvdata2", 10, 30)
+        ]
+
+        for spec in specs {
+            let cePath = "\(spec.base)/CommonEvents.\(spec.ext)"
+            let troopPath = "\(spec.base)/Troops.\(spec.ext)"
+
+            // 先证 fixture 本身确实是数组：否则"视图能读出条数"可能只是样本换了形态
+            var shapeDetail: [String] = []
+            var shapeOK = true
+            for (label, relative) in [("CommonEvents", cePath), ("Troops", troopPath)] {
+                guard let root = documentInRepo(relative)?.root else {
+                    shapeDetail.append("\(label): 读不到 \(relative)")
+                    shapeOK = false
+                    continue
+                }
+                let elements = root.arrayElements
+                let nilCount = elements?.filter { $0.isNull }.count ?? -1
+                shapeDetail.append("\(label): 顶层 \(elements == nil ? "非 Array" : "Array")，元素 \(elements?.count ?? -1) 个，nil \(nilCount) 个")
+                shapeOK = shapeOK && elements != nil && nilCount == 1
+            }
+            r.check("M-L1-\(spec.tag)-VIEW-SHAPE",
+                    "\(spec.tag) 的 CommonEvents / Troops 顶层是 Array（索引 0 为 nil）",
+                    shapeOK,
+                    shapeDetail.joined(separator: "\n"))
+
+            let commonEvents = documentInRepo(cePath).map { RGSSCommonEvent.entries(from: $0.root) } ?? []
+            let ceFields = commonEvents.map { $0.value.record?.ivars.filter { !$0.value.isNull }.count ?? 0 }
+            r.check("M-L1-\(spec.tag)-VIEW-CE",
+                    "\(spec.tag) CommonEvents 解出 \(commonEvents.count) 条记录，每条非空字段 > 0",
+                    commonEvents.count == spec.commonEvents && !ceFields.isEmpty && ceFields.allSatisfy { $0 > 0 },
+                    "条数 \(commonEvents.count)（期望 \(spec.commonEvents)），每条非空字段数 \(ceFields)")
+
+            let troops = documentInRepo(troopPath).map { RGSSTroop.entries(from: $0.root) } ?? []
+            let troopFields = troops.map { $0.value.record?.ivars.filter { !$0.value.isNull }.count ?? 0 }
+            r.check("M-L1-\(spec.tag)-VIEW-TR",
+                    "\(spec.tag) Troops 解出 \(troops.count) 条记录，每条非空字段 > 0",
+                    troops.count == spec.troops && !troopFields.isEmpty && troopFields.allSatisfy { $0 > 0 },
+                    "条数 \(troops.count)（期望 \(spec.troops)），每条非空字段数 \(troopFields)")
+        }
+
+        // 单对象形态仍然可用：entries(from:) 不是"只认数组"的新入口。
+        let record = MarshalRecord(className: MarshalSymbol("RPG::CommonEvent"), ivars: [
+            MarshalIVar(name: MarshalSymbol("@id"), value: MarshalValue.integer(7)),
+            MarshalIVar(name: MarshalSymbol("@name"), value: MarshalValue.string("合成事件"))
+        ])
+        let single = RGSSCommonEvent.entries(from: MarshalValue(.object(record)))
+        let mixed = RGSSCommonEvent.entries(from: .array([MarshalValue(.null), MarshalValue(.object(record))]))
+        let empty = RGSSCommonEvent.entries(from: .array([]))
+        let nullRoot = RGSSCommonEvent.entries(from: MarshalValue(.null))
+        r.check("M-VIEW-CONTAINER",
+                "entries(from:) 单对象 -> 1 条、数组跳过 nil、空数组与 nil 根 -> 0 条",
+                single.count == 1 && single[0].id == 7 && single[0].name == "合成事件"
+                    && mixed.count == 1 && empty.isEmpty && nullRoot.isEmpty,
+                "单对象 \(single.count) 条（id=\(single.first.map { String($0.id) } ?? "-") name=\(single.first?.name ?? "nil")）、含 nil 数组 \(mixed.count) 条、空数组 \(empty.count) 条、nil 根 \(nullRoot.count) 条")
     }
 
     // MARK: - M-L2 合成样本（文本路径 / 编码 / 边界）

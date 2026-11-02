@@ -186,6 +186,23 @@ struct RGSSMapData {
     }
 }
 
+// MARK: - 记录集合
+
+/// 数据库文件的顶层形态拆包。
+///
+/// 实测 XP / VX / VX Ace 的 CommonEvents 与 Troops 都是"顶层 Array，索引 0 为 nil、
+/// 其余是记录"（不是 VX 才有的结构）。但视图本身只包一条记录 —— 把容器形态
+/// 硬塞进 init? 会让单个对象也没法用。所以两种形态都在这里接受，init? 不变。
+enum RGSSRecordCollection {
+    /// 单条记录 -> 1 条；Array -> 跳过 nil 后的全部记录；其它（nil / 非法根）-> 0 条。
+    static func entries<View>(from value: MarshalValue, make: (MarshalValue) -> View?) -> [View] {
+        if let elements = value.arrayElements {
+            return elements.compactMap(make)
+        }
+        return make(value).map { [$0] } ?? []
+    }
+}
+
 /// RPG::CommonEvent：name + list。
 struct RGSSCommonEvent {
     let value: MarshalValue
@@ -193,6 +210,12 @@ struct RGSSCommonEvent {
     init?(_ value: MarshalValue) {
         guard value.record != nil else { return nil }
         self.value = value
+    }
+
+    /// CommonEvents 文件在 XP/VX/VX Ace 里都是"顶层 Array，索引 0 为 nil"，
+    /// 但视图只认单条记录，容器形态由这里拆开。
+    static func entries(from value: MarshalValue) -> [RGSSCommonEvent] {
+        RGSSRecordCollection.entries(from: value, make: RGSSCommonEvent.init)
     }
 
     var id: Int { RGSSRecordView(value)?.int("id") ?? 0 }
@@ -209,6 +232,11 @@ struct RGSSTroop {
     init?(_ value: MarshalValue) {
         guard value.record != nil else { return nil }
         self.value = value
+    }
+
+    /// Troops 文件同样是顶层 Array（索引 0 为 nil），见 RGSSCommonEvent.entries。
+    static func entries(from value: MarshalValue) -> [RGSSTroop] {
+        RGSSRecordCollection.entries(from: value, make: RGSSTroop.init)
     }
 
     var id: Int { RGSSRecordView(value)?.int("id") ?? 0 }

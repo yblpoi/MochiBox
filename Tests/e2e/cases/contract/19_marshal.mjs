@@ -15,6 +15,9 @@
  *                        事件层非空（236 条）、RGSS3 浮点尾随字节原样保留、
  *                        Game.ini 的 Library=RGSS3 needle 不命中
  *                        （真实工程写 Library=System\RGSS301.dll，检测靠 Data/*.rvdata2）
+ *     M-L1-<ver>-VIEW-*  CommonEvents / Troops 顶层是 Array（索引 0 为 nil）：XP 1/32、
+ *                        VX 10/30、VXA 10/30 条，每条非空字段 > 0；M-VIEW-CONTAINER 覆盖
+ *                        单对象 / 含 nil 数组 / 空数组 / nil 根四种形态
  *
  *   Level-2 合成样本（Fixtures/rmxp|rmvx|rmvxace）
  *     M-L2-<ver>-RT/EVENT/CODES/TERMS/EDGE/ENC/COUNT/TABLE/MAPINFO/SCRIPTS
