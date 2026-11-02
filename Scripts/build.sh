@@ -14,6 +14,90 @@ BIN="$BUILD/MochiBox"
 LOG="$BUILD/compile.log"
 DEFAULT_TARGET="arm64-apple-macos13.0"
 
+# ---------------------------------------------------------------------------
+# Step -1 -- 工具链定位（为什么不能直接写 swiftc / clang++）
+#
+# Xcode 装了但许可证未接受时，/usr/bin 下那批 Xcode shim（swiftc、clang++、git、
+# xcrun … 全是）一律拒绝执行：退出码 69 + "You have not agreed to the Xcode
+# license agreements"。工具链**真身**不受影响：
+#   <dev>/Toolchains/XcodeDefault.xctoolchain/usr/bin/   Xcode 安装
+#   <dev>/usr/bin/                                       Command Line Tools
+# 但真身脱离 xcrun 后拿不到 SDK 注入，必须自己补：
+#   swiftc  -sdk <sdk>          否则 "unable to load standard library for target …"
+#   clang++ -isysroot <sdk>     否则 "ld: library 'c++' not found"
+#
+# 探测顺序（正常机器行为不变）：优先 xcrun，其次 xcode-select -p 推导的真身。
+# 与 Tests/e2e/lib/toolchain.mjs 是同一套判据，改一处要改另一处。
+# ---------------------------------------------------------------------------
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+TOOLCHAIN_VIA_XCRUN=1
+
+# 走哪条路由 SDK 注入决定：
+#   /usr/bin/<tool> 是 Apple 放的小 shim，它经 xcrun 注入 SDKROOT，不需要额外参数
+#   （改造前跑的就是它）；工具链真身没有这层注入，缺 -sdk / -isysroot 会立刻失败。
+# 所以「xcrun 能用」就用 /usr/bin 的 shim，命令行与改造前逐字一致。
+xcrun_works() { xcrun --find "$1" >/dev/null 2>&1; }
+
+# 真身候选：Xcode 的 toolchain 目录，然后是 <dev>/usr/bin（CLT 布局）。
+realpath_candidate() {
+  local name="$1" candidate
+  for candidate in \
+    "$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/$name" \
+    "$DEV_DIR/usr/bin/$name"; do
+    if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+  done
+  return 1
+}
+
+SWIFTC=""
+CLANGXX=""
+if xcrun_works swiftc && xcrun_works clang++ && \
+   [ -x /usr/bin/swiftc ] && [ -x /usr/bin/clang++ ]; then
+  SWIFTC=/usr/bin/swiftc
+  CLANGXX=/usr/bin/clang++
+elif xcrun_works swiftc && xcrun_works clang++; then
+  # 有 xcrun 但没有那层 shim（少见装机形态）：用 xcrun 给的路径，自己补 SDK。
+  TOOLCHAIN_VIA_XCRUN=0
+  SWIFTC="$(xcrun --find swiftc 2>/dev/null || true)"
+  CLANGXX="$(xcrun --find clang++ 2>/dev/null || true)"
+else
+  TOOLCHAIN_VIA_XCRUN=0
+  SWIFTC="$(realpath_candidate swiftc || true)"
+  CLANGXX="$(realpath_candidate clang++ || true)"
+fi
+if [ -z "$SWIFTC" ]; then
+  echo "error: 没有可用的 Swift 编译器：/usr/bin/swiftc 被 Xcode 许可证拦住，工具链真身也不存在" >&2
+  echo "       xcode-select -p = ${DEV_DIR:-(无输出)}" >&2
+  echo "       修复: sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch" >&2
+  exit 2
+fi
+if [ -z "$CLANGXX" ]; then
+  echo "error: 没有可用的 C++ 编译器：/usr/bin/clang++ 被 Xcode 许可证拦住，工具链真身也不存在" >&2
+  echo "       修复: sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch" >&2
+  exit 2
+fi
+
+# SDK 根目录：xcrun 优先，其次按 xcode-select 的落点分两种布局找。
+SYSROOT="$(xcrun --show-sdk-path 2>/dev/null || true)"
+if [ ! -d "${SYSROOT:-/nonexistent}" ]; then
+  SYSROOT=""
+  if [ -d "$DEV_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" ]; then
+    SYSROOT="$DEV_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+  else
+    SYSROOT="$(ls -d "$DEV_DIR/SDKs"/MacOSX*.sdk 2>/dev/null | sort -r | head -1)"
+  fi
+fi
+
+# 只有走真身时才补 -isysroot：正常机器（xcrun 可用）的命令行保持原样。
+CLANGXX_SYSROOT_FLAGS=()
+if [ "$TOOLCHAIN_VIA_XCRUN" -eq 0 ] && [ -n "$SYSROOT" ]; then
+  CLANGXX_SYSROOT_FLAGS=(-isysroot "$SYSROOT")
+fi
+echo "==> toolchain: swiftc=$SWIFTC"
+if [ "$TOOLCHAIN_VIA_XCRUN" -eq 0 ]; then
+  echo "==> toolchain: xcrun 不可用（多半是 Xcode 许可证未接受），改用真身 + SDK=${SYSROOT:-未找到}"
+fi
+
 mkdir -p "$BUILD"
 
 # ---------------------------------------------------------------------------
@@ -75,7 +159,8 @@ if [ -f "$LCF_LIB" ] && [ -f "$LCF_HEADER" ] && [ -d "$LCF_PREFIX/include/lcf" ]
   # 符号（包括它自己用的 C++ 辅助函数）不外露，Swift 侧只看得到 lcf_shim.h 里
   # 声明的那 9 个函数。注意它管不到静态库那一侧 —— liblcf.a 是按上游默认选项编的，
   # 里面的 lcf:: 符号仍然是 global（应用进程内无人抢注，代价只是 nm 里多几百行）。
-  clang++ -std=c++17 -O2 -arch arm64 -mmacosx-version-min=13.0 -fvisibility=hidden \
+  "$CLANGXX" -std=c++17 -O2 -arch arm64 -mmacosx-version-min=13.0 -fvisibility=hidden \
+    ${CLANGXX_SYSROOT_FLAGS[@]+"${CLANGXX_SYSROOT_FLAGS[@]}"} \
     -c "$LCF_SHIM" \
     -I "$ROOT/Sources/Adapters/LCF" -I "$LCF_PREFIX/include" \
     -o "$BUILD/lcf/lcf_shim.o" \
@@ -125,13 +210,18 @@ struct __MochiSDKProbe: View {
     var body: some View { Text("\(value)") }
 }
 PROBE
-  local dev_dir sdk
+  local sdk candidates
   # SDK 根目录从 `xcode-select -p` 推导，不再写死绝对路径：CLT 下是 <dev>/SDKs；
-  # 选了 Xcode 时该目录不存在 -> 探测为空 -> 走上面那条"不加 -sdk"的旧行为。
-  dev_dir="$(xcode-select -p 2>/dev/null || true)"
-  for sdk in $(ls -d "${dev_dir%/}/SDKs"/MacOSX*.sdk 2>/dev/null | sort -r); do
+  # 选了 Xcode 时该目录不存在 —— 那种布局的 SDK 在 Platforms/MacOSX.platform 下，
+  # 只有走真身（xcrun 被许可证拦住）时才用，正常机器保持"不加 -sdk"的旧行为。
+  if [ "$TOOLCHAIN_VIA_XCRUN" -eq 0 ] && [ -n "$SYSROOT" ]; then
+    candidates="$SYSROOT"
+  else
+    candidates="$(ls -d "${DEV_DIR%/}/SDKs"/MacOSX*.sdk 2>/dev/null | sort -r)"
+  fi
+  for sdk in $candidates; do
     [ -d "$sdk/usr/include" ] || continue
-    if swiftc -swift-version 5 -typecheck -sdk "$sdk" -target "$DEFAULT_TARGET" "$probe" >/dev/null 2>&1; then
+    if "$SWIFTC" -swift-version 5 -typecheck -sdk "$sdk" -target "$DEFAULT_TARGET" "$probe" >/dev/null 2>&1; then
       SDK_FLAGS=(-sdk "$sdk")
       SDK_LABEL="$sdk"
       break
@@ -145,7 +235,7 @@ pick_sdk
 
 compile() {
   # shellcheck disable=SC2086
-  swiftc -O -wmo \
+  "$SWIFTC" -O -wmo \
     -swift-version 5 \
     -parse-as-library \
     -module-name MochiBox \

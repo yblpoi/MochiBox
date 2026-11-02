@@ -98,50 +98,61 @@
 <a id="L2"></a>
 ## L2 mkxp-z 设置菜单（F1 Keybindings）
 
-**状态**：已关闭 —— 本机工具链不可用
+**状态**：已关闭 —— 生成 `settingsmenu.nib` 需要的两条管理员命令在本机无法执行
 
-### 依据（2026-11-02 复核，命令 + 输出）
+### 依据（2026-11-02 复核，命令 + 退出码）
 
 ```text
-$ xcode-select -p
-/Applications/Xcode.app/Contents/Developer
 $ xcodebuild -version
 Xcode 27.2
 Build version 27B52
 
-$ xcodebuild -checkFirstLaunchStatus ; echo $?
-69                                  # 首次启动组件未安装
-
-$ xcodebuild -runFirstLaunch
+$ xcodebuild -license check ; echo $?
 You have not agreed to the Xcode license agreements. Please run
 'sudo xcodebuild -license' from within a Terminal window to review and agree
 to the Xcode and Apple SDKs license.
+69                                  # 许可证未接受
 
-$ /usr/bin/ibtool --version ; echo $?
-You have not agreed to the Xcode license agreements. …
-69
+$ xcodebuild -checkFirstLaunchStatus ; echo $?
+69                                  # 首次启动组件未安装
+
+$ ls /Library/Developer
+CommandLineTools/                   # 只有 CLT，Xcode 的首次启动内容没装进来
+
 $ xcrun --find ibtool ; echo $?
-69
+You have not agreed to the Xcode license agreements. …
+69                                  # 走 xcrun，撞许可证
 
-$ /Applications/Xcode.app/Contents/Developer/usr/bin/ibtool --version
+$ /Applications/Xcode.app/Contents/Developer/usr/bin/ibtool --version ; echo $?
 A required plugin failed to load. Please ensure system content is up-to-date
 — try running 'xcodebuild -runFirstLaunch'.
 ibtoold failed IDE initialization: Loading a plug-in failed.
+255                                 # 绕开 xcrun 直调，撞"插件没装"
 
 $ sudo -n true ; echo $?
 sudo: a password is required
-1
+1                                   # 非交互 sudo 不可用
+
+$ ls -ld /Library/Preferences
+drwxr-xr-x  root  wheel              # 755：组不可写
+$ id -Gn                             # … admin …
+                                     # 用户在 admin 组，但该组对这层目录没有写权限
 ```
 
-**与早先的记录不同，结论相同。** 早先的记录是「本机只有 Command Line Tools，
-`/usr/bin/ibtool` 是桩，执行报 `tool 'ibtool' requires Xcode`」。本轮复核这台机器上**已经装了
-Xcode 27.2**，但许可证未接受、首次启动组件未安装，`ibtool` 依然跑不出一行版本号：
-`xcrun` 侧卡在许可证（退出码 69），直接调 Xcode 内的 `ibtool` 卡在插件加载。
-两条都需要管理员权限（`sudo xcodebuild -license accept`、`sudo xcodebuild -runFirstLaunch`），
-本机 `sudo` 要密码（`sudo -n true` 直接失败），本次无法执行。
-**结论不变：这台机器上生成不出 `settingsmenu.nib`。**
+**结论**：这台机器上 `ibtool` 两条路都不通 —— `xcrun` 侧卡许可证（69），
+直调真身卡插件加载（255）。**不是「没装 Xcode」**，而是**装了 Xcode 27.2（27B52）、
+许可证未接受、首次启动组件未安装**。两条修复命令都要 root，而本机 `sudo -n` 直接失败
+（需要密码），脚本里不能替用户执行，也不能靠降权绕过。
 
-原始记录里那条「`/usr/bin/ibtool` 是桩」的说法已被本轮观测取代，以本节的命令输出为准。
+早先「本机只有 Command Line Tools，`/usr/bin/ibtool` 是桩」的记录已被本轮观测取代，
+以本节命令输出为准。
+
+**同源的副作用（已另行修复）**：许可证拦的不是 `ibtool` 一个，而是 `/usr/bin` 下整批
+Xcode shim —— `swiftc`、`clang++`、`git`、`xcrun`、`python3` 全部返回退出码 69 与同一句
+license 提示。工具链**真身**（`<Developer>/Toolchains/…`、`<Developer>/usr/bin/`）不受影响，
+所以 E2E 与构建脚本已改为「优先 xcrun，失败回退真身并补 `-sdk`/`-target`/`-isysroot`」
+（`Tests/e2e/lib/toolchain.mjs`、`Scripts/build.sh`、`Scripts/build-liblcf.sh`）。
+那条改动只影响**怎么找到编译器**，与本节的 `ibtool` 无关 —— `ibtool` 没有可用的真身替换。
 
 ### 影响
 
@@ -158,14 +169,42 @@ Xcode 27.2**，但许可证未接受、首次启动组件未安装，`ibtool` �
 
 ### 重开条件
 
-在一台 `ibtool --version` 能打印版本号的机器上生成一次 `settingsmenu.nib` 并入库，把
-`macos/views/meson.build` 里那个 `custom_target` 换成 `copy`——这样只有 CLT 的机器也能编出
-带可用设置菜单的二进制。详细步骤见 [`vendor/mkxpz/BUILD.md`](../vendor/mkxpz/BUILD.md) 的
-「有真 Xcode 时怎么让设置菜单可用」。
+**第一条路（本机可走，需要用户手工执行两条命令，顺序不能反）**：
 
-本机若要走「现场生成」而不是「入库 nib」，先 `sudo xcodebuild -license accept` 与
-`sudo xcodebuild -runFirstLaunch`，确认 `ibtool --version` 有输出后按同一节重跑 builddir
-（必须重建，`find_program('ibtool')` 的结果已固化进 `build.ninja`）。
+```bash
+sudo xcodebuild -license accept     # 1) 先接受 Xcode 许可证
+sudo xcodebuild -runFirstLaunch     # 2) 再安装首次启动组件
+```
+
+**顺序不能反**：许可证没接受时，`xcodebuild -runFirstLaunch` 自己也会被拦，
+只打印 `You have not agreed to the Xcode license agreements`；先 accept 之后它才会真正去装组件。
+
+两条都成功后先自检，三条都要有输出：
+
+```bash
+xcodebuild -checkFirstLaunchStatus ; echo $?   # 期望 0
+xcrun --find ibtool                            # 期望打印路径
+ibtool --version                               # 期望打印版本号
+```
+
+然后**重建** mkxp-z 并重新入库：
+
+```bash
+# meson builddir 必须整体重建：find_program('ibtool') 的结果已固化进 build.ninja，
+# 增量构建会继续用旧的"假 ibtool"路径，nib 还是 8 字节 FAKE-NIB。
+meson setup --reconfigure <builddir> <src>   # 或干脆 rm -rf <builddir> 后重新 setup
+ninja -C <builddir>
+bash Scripts/fetch-mkxpz.sh --force          # 重新拷贝 + strip + ad-hoc 重签
+bash Scripts/build.sh                        # 重新打包 .app
+```
+
+`--force` 不能省：`fetch-mkxpz.sh` 在 `vendor/runtime/mkxp-z` 已存在且 sha256 与记录一致时
+会直接跳过拷贝，不加它拿到的还是旧二进制。重建后 F1 设置菜单可用。
+
+**第二条路（根治，换到任何机器都有效）**：在一台 `ibtool --version` 能打印版本号的机器上
+生成一次 `settingsmenu.nib` 并入库，把 `macos/views/meson.build` 里那个 `custom_target` 换成
+`copy`——这样只有 CLT 的机器也能编出带可用设置菜单的二进制，不再依赖现场的 `ibtool`。
+详细步骤见 [`vendor/mkxpz/BUILD.md`](../vendor/mkxpz/BUILD.md) 的「有真 Xcode 时怎么让设置菜单可用」。
 
 ---
 

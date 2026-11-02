@@ -16,6 +16,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compileProbe, runProbe, SOURCES, ROOT } from '../../lib/swift.mjs';
+import { resolvePython3 } from '../../lib/toolchain.mjs';
 import { runCase } from '../../lib/tap.mjs';
 import { sleep } from '../../lib/harness.mjs';
 
@@ -54,8 +55,20 @@ runCase('domain', async (tap) => {
   try {
     compiled = compileProbe({ name: 'qa_probe', probeFile: PROBE, sources: SOURCES.qa() });
 
+    // /usr/bin/python3 也是 Xcode 的 shim：许可证未接受时它同样只打一行
+    // "You have not agreed to the Xcode license agreements"。正常机器上
+    // resolvePython3() 直接返回 'python3'，与改造前一致。
+    const python = resolvePython3();
+    if (!python.path) {
+      tap.fatal('没有可用的 python3，本地 error_server 起不来（V5 无法运行）',
+        new Error('PATH 上的 python3 不可用，xcrun 与 <Developer>/usr/bin 下也没有\n' +
+          (python.detail ? '原话：' + python.detail.split('\n')[0] + '\n' : '') +
+          '修复：sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch'));
+      return;
+    }
+
     const port = await freePort();
-    server = spawn('python3', [ERROR_SERVER, String(port)], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    server = spawn(python.path, [ERROR_SERVER, String(port)], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
     server.stdout.on('data', (chunk) => { serverLog += String(chunk); });
     server.stderr.on('data', (chunk) => { serverLog += String(chunk); });
 

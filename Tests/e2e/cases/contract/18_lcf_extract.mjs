@@ -21,6 +21,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compileProbe, runProbe, SOURCES, ROOT } from '../../lib/swift.mjs';
+import { resolveCompiler, compilerUnavailable } from '../../lib/toolchain.mjs';
 import { runCase } from '../../lib/tap.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,9 @@ const FIXTURES = [
   path.join(ROOT, 'Fixtures/rm2003/RPG_RT.ldb')
 ];
 
-const CLANG = '/usr/bin/clang++';
+// 与 swiftc 同一套探测：优先 xcrun，许可证拦住时回退工具链真身 + -isysroot。
+// 真身不带 -isysroot 会报 `ld: library 'c++' not found`（见 lib/toolchain.mjs）。
+const CLANG = resolveCompiler('clang++');
 // 与 Scripts/build-liblcf.sh 里 acquire_lock 用的是同一个目录（mkdir 做的互斥锁）。
 const LOCK = path.join(ROOT, 'vendor/.liblcf-build.lock');
 
@@ -77,14 +80,23 @@ runCase('lcf-extract', (tap) => {
     return;
   }
 
+  // 编译器不可用与"依赖不齐"是两回事：前者是环境（Xcode 许可证），后者是没构建。
+  // 先点名环境问题，免得下面 execFileSync 的 ENOENT 被当成编译失败。
+  if (!CLANG.path || CLANG.reason) {
+    tap.fatal('clang++ 不可用，经典 RM 数据层无法编译',
+      compilerUnavailable('C++ 编译器', 'clang++', CLANG));
+    return;
+  }
+
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mochibox-lcf-'));
 
   // 编译 → 造库 → 编探针。抽成函数是为了"撞车时整体重来一次"：
   // 只要中途 liblcf.a 被 rm -rf 掉，前面已经产出的 .o 也可能不可信，重来比续做干净。
   const prepare = () => {
     const obj = path.join(tmp, 'lcf_shim.o');
-    execFileSync(CLANG, [
+    execFileSync(CLANG.path, [
       '-std=c++17', '-O2', '-arch', 'arm64', '-mmacosx-version-min=13.0',
+      ...CLANG.extraFlags,
       // 只导出 lcf_shim.h 里标了 visibility("default") 的 C 函数，
       // 把 liblcf 的上千个 C++ 符号关在这支探针内部（与 Scripts/build.sh 同口径）。
       '-fvisibility=hidden',
@@ -95,8 +107,9 @@ runCase('lcf-extract', (tap) => {
 
     // 两个合成库：造完就用，用完随 tmp 一起删（不入库，见 lcf_synth.cpp 头注释）。
     const synthBin = path.join(tmp, 'lcf_synth');
-    execFileSync(CLANG, [
+    execFileSync(CLANG.path, [
       '-std=c++17', '-O2', '-arch', 'arm64', '-mmacosx-version-min=13.0',
+      ...CLANG.extraFlags,
       SYNTH, LIBLCF, '-I', INCLUDE, '-o', synthBin
     ], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 300000 });
 

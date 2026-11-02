@@ -10,9 +10,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveCompiler, requireCompiler } from './toolchain.mjs';
 
 export const ROOT = path.resolve(fileURLToPath(new URL('../../..', import.meta.url)));
-export const SWIFTC = '/usr/bin/swiftc';
+
+/*
+ * 编译器路径不再写死 /usr/bin/swiftc：Xcode 装了但许可证未接受时，那一层是拒绝
+ * 执行的 shim（退出码 69）。探测细节见 lib/toolchain.mjs —— 正常的机器上仍然
+ * 走 xcrun，SWIFTC_FLAGS 为空，编译命令行与改造前一致。
+ */
+const SWIFT = resolveCompiler('swiftc');
+export const SWIFTC = SWIFT.path;
+export const SWIFTC_FLAGS = SWIFT.extraFlags;
 
 function models() {
   const directory = path.join(ROOT, 'Sources/Domain/Models');
@@ -70,8 +79,10 @@ export function compileProbe(options) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mochibox-e2e-' + name + '-'));
   const bin = path.join(dir, name);
   try {
-    execFileSync(SWIFTC, [
+    const swiftc = requireCompiler('Swift 编译器', 'swiftc', SWIFT);
+    execFileSync(swiftc, [
       '-swift-version', '5',
+      ...SWIFTC_FLAGS,
       '-parse-as-library',
       ...sources,
       probeFile,

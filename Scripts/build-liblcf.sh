@@ -122,19 +122,44 @@ acquire_lock() {
 acquire_lock
 
 # ---------------------------------------------------------------------------
+# Step 0.05 -- git 定位
+#
+# git 同样是 /usr/bin 下的 Xcode shim：许可证未接受时它直接拒绝执行（退出码 69 +
+# "You have not agreed to the Xcode license agreements"），而 `command -v git`
+# 照样能找到它 —— 只用 command -v 判存会得到"工具齐了、下一步全炸"的假象。
+# 真身在 <Developer>/usr/bin/git（Xcode 与 CLT 都放这里）。
+# ---------------------------------------------------------------------------
+GIT="$(xcrun --find git 2>/dev/null || true)"
+if [ -z "$GIT" ] || [ "$GIT" = "/usr/bin/git" ] || [ ! -x "$GIT" ]; then
+  DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+  GIT=""
+  for candidate in "$DEV_DIR/usr/bin/git" "$(command -v git 2>/dev/null || true)"; do
+    if [ -n "$candidate" ] && [ "$candidate" != "/usr/bin/git" ] && [ -x "$candidate" ]; then
+      GIT="$candidate"; break
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # Step 0.1 -- 工具链门槛（缺什么就说怎么装，然后非 0 退出，不做半截构建）
 # ---------------------------------------------------------------------------
 stage "工具链检查"
 missing=""
-for t in git cmake ninja; do
+[ -n "$GIT" ] || missing="$missing git"
+for t in cmake ninja; do
   command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
 done
 if [ -n "$missing" ]; then
   echo "error: 缺少构建工具:$missing" >&2
+  if [ -z "$GIT" ]; then
+    echo "       git: /usr/bin/git 被 Xcode 许可证拦住，<Developer>/usr/bin/git 也不存在" >&2
+    echo "            修复: sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch" >&2
+  fi
   echo "       安装: brew install cmake ninja（git 随 Command Line Tools）" >&2
   exit 1
 fi
 [ "$(uname -m)" = "arm64" ] || die "本脚本只产出 arm64 产物（当前 $(uname -m)）"
+echo "  git:   $GIT ($("$GIT" --version))"
 echo "  cmake: $(cmake --version | head -1)"
 echo "  ninja: $(ninja --version)"
 
@@ -147,16 +172,16 @@ echo "  ninja: $(ninja --version)"
 stage "取源码 $LIBLCF_COMMIT"
 if [ ! -d "$SRC/.git" ]; then
   mkdir -p "$SRC"
-  git -C "$SRC" init -q
-  git -C "$SRC" remote add origin "$LIBLCF_URL"
+  "$GIT" -C "$SRC" init -q
+  "$GIT" -C "$SRC" remote add origin "$LIBLCF_URL"
 fi
-have="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo '')"
+have="$("$GIT" -C "$SRC" rev-parse HEAD 2>/dev/null || echo '')"
 if [ "$have" != "$LIBLCF_COMMIT" ] || [ ! -f "$SRC/CMakeLists.txt" ]; then
-  git -C "$SRC" fetch --depth 1 -q origin "$LIBLCF_COMMIT" \
+  "$GIT" -C "$SRC" fetch --depth 1 -q origin "$LIBLCF_COMMIT" \
     || die "取不到 $LIBLCF_COMMIT（检查网络或 LIBLCF_URL）"
-  git -C "$SRC" checkout -q -f FETCH_HEAD
+  "$GIT" -C "$SRC" checkout -q -f FETCH_HEAD
 fi
-echo "  src: $SRC @ $(git -C "$SRC" rev-parse --short HEAD)"
+echo "  src: $SRC @ $("$GIT" -C "$SRC" rev-parse --short HEAD)"
 
 # ---------------------------------------------------------------------------
 # Step 2 -- 构建（无 ICU / 无 XML / 无 INI / 无工具 / 无测试）
