@@ -427,6 +427,99 @@ CP932 首屏：原始 CP932 工程（`/tmp/xp-run` 的 Map001）在“回空 RES
 `Script 'Window_Message' line 82 … invalid byte sequence in UTF-8`；改成
 `PENDING + 原文(UTF-8)` 后 OCR `こんにちは`，游戏不崩。这就是 PENDING 必须带载荷的原因。
 
+### 8.2 真实 provider 的延迟与首遍原文（2026-11-02）
+
+环境：DeepSeek 官方 `https://api.deepseek.com`、`model=deepseek-flash`，
+`timeoutSec=15`、`maxBatch=120`、`maxConcurrent=4`、`batchCharBudget=1500`、
+`batchWindowMs=120`。10 条日文 RPG 台词（206 字），第 4 条含 `\C[2]…\C[0]`、
+第 8 条含 `\N[1]`。原始输出在
+`docs/evidence/rgss-real-provider-2026-11-02/latency.txt`。
+
+#### 延迟
+
+| 形态 | 请求数 | wall time |
+|---|---|---|
+| 10 条一批 | 1 | 1713ms（provider 1416ms + 120ms 合并窗口 + 落盘/唤醒） |
+| 单条（n=8） | 8 | 823 / 932 / 936 / 997 / 1014 / 1029 / 1137 / 1227ms |
+
+P50 = **997ms**，P90 = **1227ms**，min = 823ms（n=8）。10 条一批的 provider 耗时
+1416ms，只比单条 P50 慢约 1.4 倍（含 120ms 合并窗口的墙钟 1713ms 约为 1.7 倍）：
+批处理摊薄了固定开销（系统提示词、连接、排队），但**不改变首字节时间**——模型仍然要
+先想完整批才吐 JSON。
+
+token：一次 10 条请求的 `usage` 是 `prompt_tokens=331`（cache hit 128 / miss 203）、
+`completion_tokens=115`、`total_tokens=446`。产品解析层只取 `choices[0].message.content`，
+**不暴露 usage**；这个数字来自同一 endpoint / 模型 / 提示词的直连控制请求。
+
+#### 与 120ms 闸的对比：首遍必原文是物理必然
+
+- 120ms 闸 vs 最快 823ms：差 **6.9 倍**；vs P50 997ms：**8.3 倍**；vs P90 1227ms：**10.2 倍**。
+- hook 的读超时是 0.2s，闸的理论上限约 180ms（留 20ms 回包），仍差 4.6 倍以上。
+- 调闸没有意义：超过 200ms 后 hook 先超时，行为与 120ms 完全相同（照样显示原文）。
+- 要让首屏同步出中文，只有两条路：
+  1. **提前预译**：在文本显示前就入队（扫描事件页 / 数据表 / 进地图时预取），把
+     “首次出现”变成缓存命中；
+  2. 把 hook 改成阻塞等待 —— 每句冻结 0.8~1.2s，多行消息累加，不可接受。
+
+结论：**首遍原文不是阈值调错，是网络 LLM 的延迟量级决定的**。120ms 闸能保证的是
+“游戏主线程绝不等网络”；缓存命中时它同时满足“第二遍中文”（§8.1.1 的
+`RESP … source=hit`，实测 <120ms）。
+
+#### 译文质量
+
+| # | 原文 | 译文（10 条一批） |
+|---|---|---|
+| 0 | おはよう、旅の人。この村は久しぶりに賑やかだね。 | 早上好，旅行者。这个村子好久没这么热闹了。 |
+| 1 | 魔王の城は北の山の向こうにある。気をつけて行くんだぞ。 | 魔王城在北边山的那一头。路上小心啊。 |
+| 2 | 薬草を三つ持ってきてくれれば、傷を治してやろう。 | 如果你能带来三株药草，我就帮你疗伤。 |
+| 3 | `\C[2]鉄の剣\C[0]` | `\C[2]铁剑\C[0]` |
+| 4 | お前の装備では、この先の洞窟は危険すぎる。 | 以你现在的装备，前面的洞窟太危险了。 |
+| 5 | 村長がお呼びだ。広場の井戸のそばにいるよ。 | 村长在叫你。他在广场的水井旁边。 |
+| 6 | 昨日の夜、森の奥で不思議な光を見たんだ……。 | 昨晚我在森林深处看到了一道奇怪的光…… |
+| 7 | `\N[1]よ、よく戻った。無事で何よりだ。` | `\N[1]你、你回来了。平安无事比什么都好。` |
+| 8 | 宝箱には気をつけろ。たまに罠が仕掛けられている。 | 小心宝箱。有时会设有陷阱。 |
+| 9 | 旅の支度ができたら、宿屋の主人に声をかけてくれ。 | 准备好旅行后，跟旅店老板说一声。 |
+
+- 10 条无漏译，中文通顺；控制符 **逐字保留**（`\C[2]…\C[0]`、`\N[1]` 的位置与 id 都没动）。
+- 唯一瑕疵是 #7 的呼格「よ」：批次译成「你、你回来了」，单条重跑译成「哟，你回来了」。
+  这是模型输出抖动，不影响控制码与段数校验；产品侧按“可接受译文”落缓存。
+- #8 的「有时会设有陷阱」略生硬，但语义正确。
+
+#### 429 的 `Retry-After`
+
+`HTTPPoster` 现在把响应头里的 `Retry-After` 折算成毫秒并带进 `MochiBoxError`：
+
+- 支持 **delta-seconds**（`1`）与 **HTTP-date**（IMF-fixdate / RFC 850 / asctime）；
+- 上限 `K.retryAfterCapMs = 10_000`（秒数 60 → 按 10s 等；过期日期 → 0）；
+- 解析失败 / 无该头 → `nil`，继续用固定退避 `500/1000/2000ms`；
+- `runWithRetries` 用 `error.retryAfterMs ?? delays[attempt]`，并记一行
+  `delaySource=retry-after|backoff`。
+
+mock 证据（`--mode 429-retry --fail-count 1 --retry-after 1`）：第一次请求
+`ts=1793620906009` 返回 429 + `Retry-After: 1`，第二次请求 `ts=1793620907040`，
+间隔 **1031ms**（不是 500ms）。会话日志原文：
+
+~~~text
+[TranslationPipeline] 请求失败，按退避重试 attempt=1/3 code=rate_limited
+  delayMs=1000 delaySource=retry-after httpStatus=429
+~~~
+
+桥日志对应 `TEXT seq=1 → TIMEOUT → LATE source=fresh`，两行最终都拿到译文
+（`rgss-cache: entries=2 stores=2`）。原始文件在
+`docs/evidence/rgss-real-provider-2026-11-02/429/`。
+
+#### 其他失败面（mock）
+
+| 模式 | 请求数 | 错误码 | 行为 |
+|---|---|---|---|
+| 401 | 2（每行 1 次） | `auth_failed` | 不重试；PENDING + 原文 |
+| 500 | 8（每行 4 次：500/1000/2000 退避） | `bad_response` | 4 次后放弃；PENDING + 原文 |
+| 坏 JSON（200 + 非 JSON） | 2（每行 1 次） | `bad_response` | 不重试、不崩溃；PENDING + 原文 |
+
+500 的 4 次是**同一个请求体**的 4 次（首试 + 3 次重试）；两行各成一个单条块，
+所以总数是 8。若一个多条目块在 4 次后仍失败，`runSubchunk` 会按
+`badResponse` 对半拆块（已有的降级路径），总数会相应增加。
+
 ## 9. 本地复现
 
 前置：`/tmp/xp-run` 里有 mkxp-z、XP 工程和 `mochi_rgss_hook.rb`。

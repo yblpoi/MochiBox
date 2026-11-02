@@ -1,0 +1,2 @@
+[2026-11-02T20:01:43.802+08:00][INFO][session=354a][SessionLog] userAttestsOwnership=true
+[2026-11-02T20:01:46.022+08:00][WARN][session=354a][TranslationPipeline] 请求失败，按退避重试 attempt=1/3 code=rate_limited delayMs=1000 delaySource=retry-after httpStatus=429

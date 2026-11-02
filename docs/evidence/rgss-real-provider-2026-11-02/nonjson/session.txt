@@ -1,0 +1,6 @@
+[2026-11-02T20:00:56.653+08:00][INFO][session=ecc2][SessionLog] userAttestsOwnership=true
+[2026-11-02T20:01:00.917+08:00][WARN][session=ecc2][TranslationPipeline] 后端请求失败 code=bad_response httpStatus=0 items=1 message=响应不是 JSON 对象 snippet=this is not json at all
+[2026-11-02T20:01:00.917+08:00][WARN][session=ecc2][TranslationPipeline] 后端错误 code=bad_response httpStatus=0
+[2026-11-02T20:01:00.917+08:00][WARN][session=ecc2][RGSSPipeline] 块级失败（等待超时兜底） code=bad_response waiters=2
+[2026-11-02T20:01:01.048+08:00][WARN][session=ecc2][TranslationPipeline] 后端请求失败 code=bad_response httpStatus=0 items=1 message=响应不是 JSON 对象 snippet=this is not json at all
+[2026-11-02T20:01:01.048+08:00][WARN][session=ecc2][RGSSPipeline] 块级失败（等待超时兜底） code=bad_response waiters=2

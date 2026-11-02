@@ -1,0 +1,2 @@
+[mock-translate] listening on http://127.0.0.1:59444 mode=nonjson record=/tmp/evidence-evidence-nonjson/mock/requests.jsonl
+requests=2

@@ -1,0 +1,10 @@
+[2026-11-02 20:01:43] LISTEN 127.0.0.1:59513 source=pipeline deadline=120ms
+[2026-11-02 20:01:45] ACCEPT 127.0.0.1:59514
+[2026-11-02 20:01:45] TEXT seq=1 ver=RGSS2 text="こんにちは"
+[2026-11-02 20:01:45] TIMEOUT seq=1 -> PENDING（后台请求中）
+[2026-11-02 20:01:45] ACCEPT 127.0.0.1:59515
+[2026-11-02 20:01:45] TEXT seq=2 ver=RGSS2 text="魔物が来た"
+[2026-11-02 20:01:46] TIMEOUT seq=2 -> PENDING（后台请求中）
+[2026-11-02 20:01:47] LATE seq=1 source=fresh -> 已可命中
+[2026-11-02 20:01:47] LATE seq=2 source=fresh -> 已可命中
+[2026-11-02 20:02:00] STOP port=59513

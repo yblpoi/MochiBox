@@ -1,0 +1,2 @@
+[mock-translate] listening on http://127.0.0.1:59410 mode=500 record=/tmp/evidence-evidence-500/mock/requests.jsonl
+requests=8

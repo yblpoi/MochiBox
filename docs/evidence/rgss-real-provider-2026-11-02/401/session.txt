@@ -1,0 +1,6 @@
+[2026-11-02T19:59:53.467+08:00][INFO][session=a179][SessionLog] userAttestsOwnership=true
+[2026-11-02T19:59:57.505+08:00][WARN][session=a179][TranslationPipeline] 后端请求失败 code=auth_failed httpStatus=401 items=1 message=后端不可用：认证失败（请检查 API Key） snippet={"error":{"message":"mock unauthorized","type":"invalid_request_error"}}
+[2026-11-02T19:59:57.505+08:00][WARN][session=a179][TranslationPipeline] 后端错误 code=auth_failed httpStatus=401
+[2026-11-02T19:59:57.505+08:00][WARN][session=a179][RGSSPipeline] 块级失败（等待超时兜底） code=auth_failed waiters=2
+[2026-11-02T19:59:57.636+08:00][WARN][session=a179][TranslationPipeline] 后端请求失败 code=auth_failed httpStatus=401 items=1 message=后端不可用：认证失败（请检查 API Key） snippet={"error":{"message":"mock unauthorized","type":"invalid_request_error"}}
+[2026-11-02T19:59:57.636+08:00][WARN][session=a179][RGSSPipeline] 块级失败（等待超时兜底） code=auth_failed waiters=2

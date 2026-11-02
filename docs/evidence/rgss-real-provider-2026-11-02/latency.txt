@@ -1,0 +1,25 @@
+config backend=openai endpoint=https://api.deepseek.com model=deepseek-flash timeoutSec=15 maxBatch=120 maxConcurrent=4 charBudget=1500 window=120ms keyLen=35
+batch plan items=10 textChars=206 charBudget=1500 subchunks=1
+BATCH wallMs=1713 delivered=10/10 batches=1 errors=
+LINE	0	batch	providerMs=1416	raw=おはよう、旅の人。この村は久しぶりに賑やかだね。	translated=早上好，旅行者。这个村子好久没这么热闹了。
+LINE	1	batch	providerMs=1416	raw=魔王の城は北の山の向こうにある。気をつけて行くんだぞ。	translated=魔王城在北边山的那一头。路上小心啊。
+LINE	2	batch	providerMs=1416	raw=薬草を三つ持ってきてくれれば、傷を治してやろう。	translated=如果你能带来三株药草，我就帮你疗伤。
+LINE	3	batch	providerMs=1416	raw=\C[2]鉄の剣\C[0]	translated=\C[2]铁剑\C[0]
+LINE	4	batch	providerMs=1416	raw=お前の装備では、この先の洞窟は危険すぎる。	translated=以你现在的装备，前面的洞窟太危险了。
+LINE	5	batch	providerMs=1416	raw=村長がお呼びだ。広場の井戸のそばにいるよ。	translated=村长在叫你。他在广场的水井旁边。
+LINE	6	batch	providerMs=1416	raw=昨日の夜、森の奥で不思議な光を見たんだ……。	translated=昨晚我在森林深处看到了一道奇怪的光……
+LINE	7	batch	providerMs=1416	raw=\N[1]よ、よく戻った。無事で何よりだ。	translated=\N[1]你、你回来了。平安无事比什么都好。
+LINE	8	batch	providerMs=1416	raw=宝箱には気をつけろ。たまに罠が仕掛けられている。	translated=小心宝箱。有时会设有陷阱。
+LINE	9	batch	providerMs=1416	raw=旅の支度ができたら、宿屋の主人に声をかけてくれ。	translated=准备好旅行后，跟旅店老板说一声。
+LINE	0	single	wallMs=823	ok=true	raw=おはよう、旅の人。この村は久しぶりに賑やかだね。	translated=早上好，旅人。这个村子好久没这么热闹了。
+LINE	1	single	wallMs=1227	ok=true	raw=魔王の城は北の山の向こうにある。気をつけて行くんだぞ。	translated=魔王的城堡在北边山的那一头。路上小心。
+LINE	2	single	wallMs=1014	ok=true	raw=薬草を三つ持ってきてくれれば、傷を治してやろう。	translated=如果你能带来三株药草，我就为你治疗伤口。
+LINE	3	single	wallMs=936	ok=true	raw=\C[2]鉄の剣\C[0]	translated=\C[2]铁剑\C[0]
+LINE	4	single	wallMs=932	ok=true	raw=お前の装備では、この先の洞窟は危険すぎる。	translated=你的装备要继续深入前面的洞窟实在太危险了。
+LINE	5	single	wallMs=1137	ok=true	raw=村長がお呼びだ。広場の井戸のそばにいるよ。	translated=村长在叫你。他在广场的水井旁边。
+LINE	6	single	wallMs=997	ok=true	raw=昨日の夜、森の奥で不思議な光を見たんだ……。	translated=昨晚，我在森林深处看到了一道奇异的光……。
+LINE	7	single	wallMs=1029	ok=true	raw=\N[1]よ、よく戻った。無事で何よりだ。	translated=\N[1]哟，你回来了。平安无事比什么都好。
+SINGLE summary n=8 samples=823,1227,1014,936,932,1137,997,1029 p50=997 p90=1227 min=823 max=1227
+USAGE status=200 wallMs=1305 completion_tokens=115 prompt_cache_hit_tokens=128 prompt_cache_miss_tokens=203 prompt_tokens=331 prompt_tokens_details={
+    "cached_tokens" = 128;
+} total_tokens=446

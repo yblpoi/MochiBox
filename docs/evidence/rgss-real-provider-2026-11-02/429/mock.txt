@@ -1,0 +1,2 @@
+[mock-translate] listening on http://127.0.0.1:59512 mode=429-retry failCount=1 retryAfter=1 record=/tmp/evidence-evidence-429/mock/requests.jsonl
+requests=3
