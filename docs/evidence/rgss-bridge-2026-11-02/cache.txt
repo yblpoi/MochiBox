@@ -1,0 +1,2 @@
+{"backend":"openai","hitCount":0,"key":"cdca5359304db63bf043945a12f17328ccea0200a3b04819ca8d1077ebf698ee","seq":1,"srcLang":"","text":"赤い","tgtLang":"","translatedText":"译:赤い","ts":1793617657174.418}
+{"backend":"openai","hitCount":1,"key":"cdca5359304db63bf043945a12f17328ccea0200a3b04819ca8d1077ebf698ee","seq":2,"srcLang":"","text":"赤い","tgtLang":"","translatedText":"译:赤い","ts":1793617683387.4312}

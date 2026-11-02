@@ -1,0 +1,9 @@
+[2026-11-02 19:07:30] LISTEN 127.0.0.1:54003 source=pipeline deadline=120ms
+[2026-11-02 19:07:36] ACCEPT 127.0.0.1:54004
+[2026-11-02 19:07:36] TEXT seq=1 ver=RGSS2 text="\\C[2]赤い\\C[0]"
+[2026-11-02 19:07:36] TIMEOUT seq=1 -> PENDING（后台请求中）
+[2026-11-02 19:07:37] LATE seq=1 source=fresh -> 已可命中
+[2026-11-02 19:07:41] ACCEPT 127.0.0.1:54006
+[2026-11-02 19:07:41] TEXT seq=2 ver=RGSS2 text="\\C[2]赤い\\C[0]"
+[2026-11-02 19:07:41] RESP seq=2 source=hit text="\\C[2]译:赤い\\C[0]"
+[2026-11-02 19:08:03] STOP port=54003

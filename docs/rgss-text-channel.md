@@ -378,9 +378,46 @@ hook（Ruby，游戏主线程）
 
 | 版本 | 首遍（空缓存） | 二遍 / 重启 | 缓存统计 |
 |---|---|---|---|
-| XP | OCR `赤い`；`TIMEOUT → PENDING`、`LATE source=fresh` | OCR `译：赤い`；`RESP source=hit`；重启首屏 `译：赤い` | 1/1 → 重启 1/0（100%） |
-| VX | OCR `赤い`；`TIMEOUT → PENDING` | 重启 OCR `译：赤い`；`RESP source=hit` | 重启 100% |
-| VX Ace | OCR `赤い`；`TIMEOUT → PENDING` | 重启 OCR `译赤赤い`（OCR 把冒号并进字）；`RESP source=hit` | 重启 100% |
+| XP | OCR `赤い`；`TIMEOUT seq=N -> PENDING（后台请求中）`、`LATE seq=N source=fresh -> 已可命中` | OCR `译：赤い`；`RESP seq=N source=hit text=…`；重启首屏 `译：赤い` | 1/1 → 重启 1/0（100%） |
+| VX | OCR `赤い`；同样两行（实测 seq=1） | **同一轮** OCR `译：赤い`；`RESP seq=2 source=hit text="\C[2]译:赤い\C[0]"`；重启也命中 | 同一轮 entries=1 hits=1 stores=1（50%）→ 重启 100% |
+| VX Ace | OCR `赤い`；`TIMEOUT seq=N -> PENDING（后台请求中）` | 重启 OCR `译赤赤い`（OCR 把冒号并进字）；`RESP seq=N source=hit` | 重启 100% |
+
+#### 8.1.1 同一轮内首遍原文、次遍中文（VX，2026-11-02 19:07）
+
+上表 VX 的“同一轮”来自一次 `--play-native /tmp/vx-run`：测试注入器
+`docs/evidence/rgss-bridge-2026-11-02/inject.rb` 在 `Scene_Map` 后 push 同一行两次，
+第一次与第二次间隔 5.5s（避开 hook 的 1.5s PENDING 抑制窗口）。桥日志原文：
+
+~~~text
+[2026-11-02 19:07:36] TEXT seq=1 ver=RGSS2 text="\\C[2]赤い\\C[0]"
+[2026-11-02 19:07:36] TIMEOUT seq=1 -> PENDING（后台请求中）
+[2026-11-02 19:07:37] LATE seq=1 source=fresh -> 已可命中
+[2026-11-02 19:07:41] TEXT seq=2 ver=RGSS2 text="\\C[2]赤い\\C[0]"
+[2026-11-02 19:07:41] RESP seq=2 source=hit text="\\C[2]译:赤い\\C[0]"
+~~~
+
+- 第 1 次截图 `docs/evidence/rgss-bridge-2026-11-02/rgss-vx-first.png`，OCR `赤い`；
+- 第 2 次截图 `docs/evidence/rgss-bridge-2026-11-02/rgss-vx-second.png`，OCR `译：赤い`；
+- 完整 `bridge.txt` / `hook.txt` / `inject.txt` / `mock-requests.txt` / `cache.txt` 在同目录；
+- `rgss-cache: entries=1 hits=1 stores=1 hitRate=50%`；
+- mock 的 user content 是 `["赤い"]`，0 次包含 `\C[`。
+
+**之前版本把这三行写成 `TIMEOUT → PENDING` / `LATE source=fresh`，少了 `seq=` 与 `->`，
+按本节的原文为准。**
+
+复现：
+
+1. mock：`node Fixtures/mock_translate_server.mjs --port 64805 --mode slow --delay-ms 800 --record /tmp/rgss-evidence/mock`；
+2. `mkxp.json` 的 `preloadScript` 指向测试注入器（`inject.rb`），`GameLauncher` 会把产品
+   hook 排在最后；
+3. 启动
+   `MOCHI_DATA_DIR=/tmp/rgss-evidence/data ./build/MochiBox.app/Contents/MacOS/MochiBox --play-native /tmp/vx-run --provider openai --endpoint http://127.0.0.1:64805 --api-key test --duration 30`；
+4. 标题画面按 `space` 进新游戏；第一次 push 后 1s 截第一张，`terminate_message` 后 1.5s
+   再 push 同一行，1s 后截第二张。
+
+**为什么重绘不行**：hook 收到 PENDING 后把同一 key 记入 1.5s 窗口；窗口内的
+`refresh` / `process_all_text` 重绘不会再发 TEXT。要看到第二遍中文，必须让第一次消息
+真正结束（`terminate_message` / 玩家按确认键）并在 1.5s 之后重新显示同一行。
 
 控制符：桥日志 `RESP … text="\C[2]译:赤い\C[0]"`；mock 的 `requests.jsonl` 里 23 条已落盘请求
 （mock 计数 24，含收尾时 1 条未落盘）的 user content 只有 `赤い` / `こんにちは` / `魔物が来た` /

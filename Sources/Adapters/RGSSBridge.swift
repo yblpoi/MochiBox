@@ -316,6 +316,13 @@ final class RGSSBridge: @unchecked Sendable {
         let version = String(parts[2])
         let payload = String(parts[3])
 
+        // seq 是 hook 的请求序号（Ruby 侧 @seq += 1，恒为十进制整数）。非数字的 seq
+        // 无法与 hook 的回包匹配，属于协议错误 —— 丢掉这一行，不回复、不影响连接。
+        guard !seq.isEmpty, seq.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else {
+            log("BADSEQ \(seq.debugDescription)")
+            return
+        }
+
         guard let raw = Data(base64Encoded: payload), !raw.isEmpty else {
             log("BADPAYLOAD seq=\(seq)")
             return

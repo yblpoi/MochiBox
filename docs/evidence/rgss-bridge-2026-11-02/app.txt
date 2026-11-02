@@ -1,0 +1,4 @@
+play: root=/tmp/vx-run engine=rgss2 provider=openai duration=30.0s
+rgss: source=pipeline cache=/tmp/rgss-evidence/data/cache/cache.ja-zh-Hans.jsonl
+play: backend=mkxpz pid=7766
+rgss-cache: entries=1 hits=1 stores=1 hitRate=50% path=/tmp/rgss-evidence/data/cache/cache.ja-zh-Hans.jsonl

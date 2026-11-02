@@ -1,0 +1,6 @@
+[2026-11-02 19:07:31] socket probe: Socket.tcp=no TCPSocket=yes
+[2026-11-02 19:07:31] tracepoint armed; waiting for Window_Message
+[2026-11-02 19:07:31] hooked Window_Message#start_message as RGSS2 (trigger=tracepoint)
+[2026-11-02 19:07:36] RESP seq=1 (pending) "\\C[2]赤い\\C[0]"
+[2026-11-02 19:07:36] PENDING (display original) "\\C[2]赤い\\C[0]"
+[2026-11-02 19:07:41] RESP seq=2 "\\C[2]译:赤い\\C[0]"

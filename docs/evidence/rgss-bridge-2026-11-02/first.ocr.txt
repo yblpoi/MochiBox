@@ -1,0 +1,6 @@
+WINDOW id=6510 pid=7766 bounds=546.0,272.0 544.0x448.0
+CAPTURED /tmp/rgss-evidence/first.png
+SIZE 1088x896
+OCR_COUNT 2
+OCR [0.14,0.95] VX Test
+OCR [0.03,0.20] 赤い
