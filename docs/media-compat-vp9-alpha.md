@@ -391,9 +391,9 @@ mp4/mov 容器）。整个服务器共享一份实例，翻页/重播不再 spaw
 - **透明度只看合成结果**：`alpha:false` 的画布 `readPixels` A 通道恒为 255（见 §3.1），
   必须垫纯色 quad 合成后读该点颜色；2D canvas 上的 alpha 只能证明解码层没坏，
   不能证明游戏里透明（见 §三）。
-- **回归门禁**（当前 HEAD）：
-  `--selftest` **74 pass / 0 fail / 1 skip**、`Tests/e2e/run.sh --suite contract`
-  **14 cases / 541 assertions**、`--suite kernel` **13 cases / 153 assertions**；
+- **回归门禁**（2026-11-02 实测）：
+  `--selftest` **88 pass / 0 fail / 1 skip**、`Tests/e2e/run.sh --suite contract`
+  **19 cases / 888 assertions**、`--suite kernel` **14 cases / 165 assertions**；
   真机 `probe().errors` 必须为 0。
 - **真机基线**（本作标题画面，`--kernel-smoke`）：
   `PASS scene=Scene_Title canvas=1280x720 video=4 video_ready=4 video_paused=false autoplay=verified`。

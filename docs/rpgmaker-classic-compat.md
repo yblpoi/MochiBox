@@ -17,9 +17,11 @@
 | 层 | 现状 | 位置 |
 |---|---|---|
 | 识别 | **已完成**：easyrpg / rgss1 / rgss2 / rgss3 四条 high 置信签名齐备 | `Sources/Adapters/EngineDetector.swift:159-188` |
-| 库模型 | `isLaunchable` 只认 mv/mz，与 `supportLevel` 无关 | `Sources/Domain/Models/LibraryModels.swift:26-30` |
+| 库模型 | `isLaunchable` 只认 mv/mz，与 `supportLevel` 无关（撰写时） | `Sources/Domain/Models/LibraryModels.swift:26-30` |
 | 数据层 | 无 LCF 与 Marshal 读写能力 | 不存在 |
 | 运行时 | 只有 NW.js + CDP 一条通道 | `Sources/Adapters/` |
+
+> 上表是**撰写时**的现状快照，不是当前状态：运行时已有内置 EasyRPG 与自建 mkxp-z 两条子进程通道。落地结果见 §八 的状态行，实测证据见 [`rpgmaker-runtime-verification.md`](rpgmaker-runtime-verification.md)。
 
 边界：不引入 Wine（需关 SIP / root，不可分发，`re-findings.md` §11 已判死）；不做存档编辑与内购解锁（P2-07 口径）。
 
@@ -131,16 +133,20 @@ shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件�
 
 **`--play-native` 不是"多打一行日志"**：`--play` 的退出码语义绑在 `AttachCLI.swift:611-625` 的 `environmentCodes`（环境缺口 → exit 3 + `error_code:` + `play: environment=`）。新模式的 `runtimeMissing` / `runtimeNotExecutable` **必须加进这张表**，否则掉回 exit 1、脚本无法按码分支。现成模板是 `Tests/e2e/cases/faults/07_unknown_engine.mjs:24-35`（空目录 → exit 3 + `launcher_no_executable`）。`launcherNoExecutable` 语义不动，两个新码只用于"引擎已判 easyrpg / rgss，但运行时缺失"。suite 必须新开，不复用 `play: http=` 的 kernel / faults 分层。
 
+> **落地差异（2026-11-02）**：没有新开 suite，两条用例作为 **F11 / F12 并入 `faults`**（`11_play_on_native_engine.mjs` 验 `--play` 拒绝原生后端，`12_native_engine_faults.mjs` 验缺 `Game.ini` / `Library=` 错配）。`play: http=` 那行正则与既有 kernel / faults 断言未动，ADR-4 的**目的**（识别契约与启动能力解耦）仍成立。
+
 ### ADR-5：「仅 MV/MZ」的六处硬编码
 
 | # | 位置 | 性质 | 处理 |
 |---|---|---|---|
 | 1 | `MainWindow.swift:191`「仅 MV/MZ」 | 文案 | 按 `launchBackend` 改写 |
 | 2 | `FullTextPanel.swift:551`「仅支持 MV/MZ」 | 文案 | 同上 |
-| 3 | `EngineModels.swift:100` p2 文案「暂不支持（需 Wine 后端）」 | 文案 | 对原生路线是**假的**，必须改 |
+| 3 | `EngineModels.swift:132` p2 文案「暂不支持（需 Wine 后端）」 | 文案 | 视图层已按 ADR-3 派生；p2 原文案保留给无后端引擎 |
 | 4 | `CheatController.swift:57` `isAvailable` | 能力门 | 按 `rpcCheats` 判断（§六） |
 | 5 | `MainWindow.swift:155-158` `isMVMZ` | 能力门 | 按 `rpcCheats` / `fullTextScan` 分别判断 |
 | 6 | `CheatController.swift:178`「仅 MV/MZ 支持修改器」 | 文案 | 写本文时补查所得，同样要改 |
+
+> 落地状态（2026-11-02）：1 / 2 / 3 / 6 的文案已改写（`grep '仅 MV/MZ' Sources/` 只剩 `FullTextPanel.swift:44` 的一条注释，不再是用户可见文案）；4 / 5 已改为按 `RuntimeCapabilities.rpcCheats` / `fullTextScan` 分轴判断。
 
 4、5 是功能开关不是文案：跑得起来（`launchBackend`）与能作弊（`RuntimeCapabilities`）是两件事，见 §六。
 
@@ -175,18 +181,18 @@ shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件�
 |---|---|---|---|---|
 | 2000 | `EasyRPG/TestGame`（TestGame-2000） | GPL-3.0 | ~240KB：LDB + LMT + ini + 3 个 LMU | 素材是 EasyRPG 自制的 CC-BY 替代品，**不是 Enterbrain RTP** |
 | 2003 | 同上（TestGame-2003） | GPL-3.0 | ~450KB：同结构 | 同上 |
-| XP | `aphadeon/OpenXP` | MIT | 492KB，16 个真实 `.rxdata` | 含 Actors / Items / `@words` 真文本，事件层为空 |
-| VX | `nathaniel-daniel/rgssad-rs` | Apache-2.0 | ~340KB，16 个 `.rvdata`（Git LFS，需 `media.githubusercontent.com` 取真身） | 数据库层有真文本 |
-| VX Ace | **无合法样本** | — | — | 必须自合成（Level-2 ❌） |
+| XP | `aphadeon/OpenXP` | MIT | 492KB，15 个真实 `.rxdata` | 含 Actors / Items / `@words` 真文本，事件层为空 |
+| VX | `nathaniel-daniel/rgssad-rs` | Apache-2.0 | ~340KB，14 个 `.rvdata`（Git LFS，需 `media.githubusercontent.com` 取真身） | 数据库层有真文本，事件层为空 |
+| VX Ace | `caynine9/Jimicization-Project` | CC0-1.0 | 27 个真实 `.rvdata2` + `Game.ini` / `Game.rvproj2`（470,061 B） | 数据库 + 事件层都有真文本（1,463 条）；**默认脚本仍无官方字节级副本**，见 `rpgmaker-runtime-verification.md` |
 
-两个外部样本**事件层**为空（Map 的 `@events` 空、`CommonEvents` 只有 code=0），但数据库层不是：
+XP / VX 两个外部样本**事件层**为空（Map 的 `@events` 空、`CommonEvents` 只有 code=0）；VX Ace 的真实样本事件层非空（236 条 101/401 文本）。数据库层三个样本都有真文本：
 
-- XP Level-1 = OpenXP 的 16 个 `.rxdata` 全解；Level-2 = 数据库 / 术语 ✅（Actors 9 个 name、Items 33 条 name+description、`@words` 20 条）+ 事件 ❌ → 合成 `Map002.rxdata`（101×3 / 401 / 102 / 402 / 404，3,060 B，已 PASS）补事件层。
-- VX Level-1 = 16 个 `.rvdata` 全解；Level-2 = 数据库 / 术语 ✅（Skills 82 全带 description、Items 20、Weapons 30、Armors 30、States 16、`@terms` 33 字段全非空）+ 事件 ❌（40 条 EventCommand 全是 code=0，合成器未做）。
-- VX Ace：无样本，Level-2 ❌。
+- XP Level-1 = OpenXP 的 15 个 `.rxdata` 全解；Level-2 = 数据库 / 术语 ✅（Actors 9 个 name、Items 33 条 name+description、`@words` 20 条）+ 事件 ❌ → 合成 `Map002.rxdata`（101×3 / 401 / 102 / 402 / 404，3,060 B，已 PASS）补事件层。
+- VX Level-1 = 14 个 `.rvdata` 全解；Level-2 = 数据库 / 术语 ✅（Skills 82 全带 description、Items 20、Weapons 30、Armors 30、States 16、`@terms` 33 字段全非空）+ 事件 ❌（40 条 EventCommand 全是 code=0，合成器未做）。
+- VX Ace Level-1 = `Fixtures/rmvxace-real/` 的 27 个 `.rvdata2` 逐个解析并往返字节相同（1,463 条文本，`@terms` 4 个容器）；Level-2 的合成样本只补 `terms.commands` 哈希键路径。**默认脚本集是 CC0 工程的结构审计结论，不是官方安装副本**（本机未装 RPG Maker，做不了 byte-diff）。
 - 2000/2003：TestGame 的 LDB + LMT + ini + 3 个 LMU，**不含位图/音频**（LCF 只存文件名）；LMU 有 176 条可读字符串且带 `\s[1]` 转义码。
 
-因此「XP 文本支持」只在数据库 + 术语 + 合成事件三层成立，**不得写成已验收**。附带一条：`OpenXP` 的 `Game.ini` 是 `Library=RGSS104E.dll`，子串命中 `EngineDetector.swift:184` 的 `"Library=RGSS1"`，可直接作 XP 识别正例。
+因此「XP 文本支持」只在数据库 + 术语 + 合成事件三层成立，**不得写成已验收**；VX Ace 有真实事件层，但默认脚本仍只有结构审计。附带一条：`OpenXP` 的 `Game.ini` 是 `Library=RGSS104E.dll`，子串命中 `EngineDetector.swift:184` 的 `"Library=RGSS1"`，可直接作 XP 识别正例。
 
 许可侧：以 `Fixtures/README.md` 为准。
 
@@ -198,10 +204,12 @@ shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件�
 
 | 阶段 | 内容 | 产出判据 |
 |---|---|---|
-| **Phase 1**（当前） | 2000/2003 的 LCF 数据层 | liblcf 零依赖构建 + C shim + Swift 封装 + 真实 LDB 文本提取；**回写只服务"导出整包译制版"，不是会话内通道** |
-| Phase 2 | RGSS 三版的 Marshal 数据层：**XP 先**（OpenXP + 合成 Map002 双 fixture 已齐），VX 紧随（16 个 `.rvdata` 已解，事件合成未做），VX Ace 最后（无样本） | 纯 Swift 解析/写回 + 三版本样本 + 文本路径提取；mkxp-z 构建已通（见 §九） |
+| **Phase 1** ✅ | 2000/2003 的 LCF 数据层 | liblcf 零依赖构建 + C shim + Swift 封装 + 真实 LDB 文本提取；**回写只服务"导出整包译制版"，不是会话内通道** |
+| Phase 2 | RGSS 三版的 Marshal 数据层：**XP 先**（OpenXP + 合成 Map002 双 fixture 已齐），VX 紧随（14 个 `.rvdata` 已解，事件合成未做），VX Ace 最后（CC0 真实样本已入库） | 纯 Swift 解析/写回 + 三版本样本 + 文本路径提取；mkxp-z 构建已通（见 §九） |
 | Phase 3 | 接线 | `launchBackend` 静态表、`LaunchStrategy.nativeRuntime`、适配器构造、`displaySupportLevel` 派生、六处能力门、`--play-native` |
 | Phase 4 | 运行时 | 2000/2003 走 EasyRPG + PO 预翻译（0.8.1 只认游戏目录内的 language/：自编 master，或复制数据 + `--project-path`）；**游戏内无实时通道**，文本流只在 MochiBox 侧可见；静态文本接近全覆盖，脚本生成的内容盖不住。RGSS 三版用 mkxp-z + Ruby hook 做实时 |
+
+落地状态（2026-11-02）：**Phase 1–3 已完成**；Phase 4 的**启动**部分已完成（EasyRPG 与 mkxp-z 都装进 `.app`，`--play-native` 能拉起），**Ruby 层实时 hook 未做**——RGSS 游戏目前只有启动与数据层，游戏内文本通道仍缺。上表保留为决策记录。
 
 若要做 2000/2003 的**实时**翻译，需 fork EasyRPG 加 IPC 回调，XL 成本，非刚需不做。
 
@@ -214,16 +222,20 @@ shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件�
 - 回写前必须确认 `db.system.ldb_id`：writer 由它决定写不写 2003-only 段，`ldb_id=0` 时 `Save` 返回成功但 `0x1D`/`0x1E`/`0x1F` 直接消失，且无法从 chunk 反推。
 - 分段器对非 mvmz family 返回单段、不剥码（`Segmenter.swift:18-22`），控制码会进译文。`K.engineFamily` 是全局常量（`Constants.swift:46`），`Sources/` 内 36 处引用、`engineFamily` 标识符共 54 处。改 per-engine family 会改 `cacheKey` → 全部历史缓存 miss，**必须保证** `.mv.family == "mvmz"` 逐字不变。
 - `GameLauncher.resolveStrategy` 的 nwjs 规则**不看 engine**（`GameLauncher.swift:139-146` / `:156-169`）：带 `EasyRPG Player.app` 的游戏目录会被当 nwjs 启动，必须按 engine 收窄。
-- mkxp-z 已端到端打通：`forcefallback` 全源码构建 2586/2586（约 10 分钟），产物 37.4MB、minos 13.0、`otool -L` 里 `/opt/homebrew` 计数 **0**；能启动并打印 `RGSS version 1 (RPG Maker XP)`，ANGLE→Metal 正常。两条限制：① 设置菜单要 `macos/views/meson.build:13` 的 `ibtool`（只有 Xcode 提供），当前靠**构建期假 ibtool** 绕过，代价是设置菜单不可用；正解是在有 Xcode 的机器生成一次 `settingsmenu.nib` 入库、把该 target 改成 copy，**未做**。② Ruby 只能 3.1.3（仓库只有 `ruby-3.1.wrap`）。**头号风险：老 RGSS 的 1.8 语义能否被 3.1 覆盖，完全未验证**——只影响运行时兼容，不影响构建。官方无 macOS 二进制（0 release），CI 目标 11.0，自建可改 13.0。
-- **未验证**：除 TestGame-2000 之外的第三方 LDB / LMT / LMU、`LSD` 存档、真实 XP/VX/VXA 游戏在 mkxp-z 上跑通（只到初始化与认版本）、Wine 路线。
+- mkxp-z 已端到端打通：`forcefallback` 全源码构建 2586/2586（约 10 分钟），产物 40.1 MiB（42,075,568 B）、minos 13.0、`otool -L` 里 `/opt/homebrew` 计数 **0**；三版默认脚本集都已跑通（XP：标题→New Game→Map001→事件弹两行中文→菜单→行走 `Step Count` 0→5；VX：标题→地图→菜单→行走；VX Ace：标题→New Game→开场文本→行走，坐标 `(3,5)→(7,5)→(7,7)`），ANGLE→Metal 正常。两条限制：① 设置菜单要 `macos/views/meson.build:13` 的 `ibtool`（只有 Xcode 提供），当前靠**构建期假 ibtool** 绕过，代价是设置菜单不可用；正解是在有 Xcode 的机器生成一次 `settingsmenu.nib` 入库、把该 target 改成 copy，**未做**。② Ruby 只能 3.1.3（仓库只有 `ruby-3.1.wrap`）。**老 RGSS 的 1.8 语义风险**已对**默认脚本集**实测消解（三版都在 Ruby 3.1.3 上跑通），但**第三方 / 商业脚本**仍未验证——只影响运行时兼容，不影响构建。官方无 macOS 二进制（0 release），CI 目标 11.0，自建可改 13.0。
+- **mkxp-z 是自建二进制**：`vendor/mkxpz/mochibox-macos-fixes.patch` 共 **3 个** macOS 补丁（字体固定、`iconv_open` 失败防护、`PHYSFS_stat` 失败分支），再加构建期假 `ibtool` 桩；上游没有官方 macOS 二进制可依赖。
+- **分发体积**：整包 `.app` 约 **83 MB**（EasyRPG 33.9 MB + mkxp-z 40.1 MiB + 产品本体），显著大于纯 MV/MZ 版本。
+- **未验证**：除 TestGame-2000 之外的第三方 LDB / LMT / LMU、`LSD` 存档、**任何商业游戏**（现有 fixture 都是测试 / 合成工程；依赖 Win32API 与外部 DLL 的国产游戏仍跑不动）、Wine 路线。
+- **已实测到交互层**：XP / VX / VX Ace 的 mkxp-z 链路都过了标题、地图、菜单与行走；XP 有 `Step Count` 读数，VX Ace 有坐标读数，VX 只有像素位移证据。证据强度（A / A-）与复现步骤见 [`rpgmaker-runtime-verification.md`](rpgmaker-runtime-verification.md)。
+- **脚本仍是限定条件**：VX 相对官方 EN 默认集 **94/95 段逐字节一致**、`Game_Interpreter` 差 **2 行**（社区修补）；VX Ace 的 129 段来自 CC0 工程，只有与工程原文件的逐段比对 + 结构审计，**没有官方安装副本的 byte-diff**。
 
 ## 十、已知不一致（文档 vs 代码）
 
 | # | 文档说法 | 代码事实 | 处置 |
 |---|---|---|---|
-| 1 | `architecture.md:493`：`isLaunchable` = `supportLevel == .p0 && !missing` | `(engine == .mv \|\| .mz) && !missing`（`LibraryModels.swift:27`）。照文档公式，Tyrano（p0 但无适配器）会被误判可启动 | 以 ADR-2 的 `launchBackend` 为准，文档待修订 |
-| 2 | `architecture.md:831` 有 `EngineAdapterRegistry` | `Sources/` 零命中，`SessionController.swift:269` 直接构造 `MVAdapter` | 文档写的是目标态；ADR-2 明确**不补**这个抽象 |
-| 3 | `EngineModels.swift:100` p2 文案「需 Wine 后端」 | 新路线是原生（EasyRPG / mkxp-z），文案失真 | 见 ADR-3 的展示派生 |
+| 1 | 旧版 `architecture.md`：`isLaunchable` = `supportLevel == .p0 && !missing` | `launchBackend != nil && !missing`（`LibraryModels.swift:29`）。照旧文档公式，Tyrano（p0 但无适配器）会被误判可启动 | **已修订**：`architecture.md:495` 的代码草图已改成 `launchBackend` 口径 |
+| 2 | `architecture.md:834` 有 `EngineAdapterRegistry` | `Sources/` 零命中，`SessionController.swift:269` 直接构造 `MVAdapter` | 文档写的是目标态；ADR-2 明确**不补**这个抽象 |
+| 3 | `EngineModels.swift:132` p2 文案「暂不支持（需 Wine 后端）」 | 该文案仍是 p2 的兜底（kirikiri / wolf 等无后端引擎）；easyrpg / rgss1-3 已按 ADR-3 的 `displaySupportLevel` 显示「可启动（内置运行时）」 | 视图层已派生，p2 原文案保留；旧行号 `:100` 已漂移到 `launchBackend` |
 | 4 | 交接口径「仅 MV/MZ 的 5 处硬编码」 | 实为 6 处（多出 `CheatController.swift:178`） | 已并入 ADR-5 表 |
 
 ## 附录 A · 复现方式

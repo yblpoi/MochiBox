@@ -19,7 +19,7 @@ bash Scripts/build.sh
 
 # 默认层：协议层。零 GUI、零网络、断网可跑。
 bash Tests/e2e/run.sh --suite contract
-# 末行：E2E PASS suite=contract cases=15 assertions=546
+# 末行：E2E PASS suite=contract cases=19 assertions=888
 
 # 领域层：持久化/脱敏/日志/韧性/直通/缓存/全文往返；零 GUI（D9 例外）
 bash Tests/e2e/run.sh --suite domain
@@ -35,11 +35,11 @@ bash Tests/e2e/run.sh --suite all
 
 # 内建自检：不建窗口、不读网络、不写用户目录、默认不拉起浏览器
 ./build/MochiBox.app/Contents/MacOS/MochiBox --selftest
-# 末行：# pass 74 fail 0 skip 1
+# 末行：# pass 88 fail 0 skip 1
 # 那 1 条 skip 是 browser_launch_and_terminate（真要拉起 Chromium）。
 # 想连它一起跑（会真的起/杀一次 Chrome）：
 MOCHI_SELFTEST_BROWSER=1 ./build/MochiBox.app/Contents/MacOS/MochiBox --selftest
-# 末行：# pass 46 fail 0 skip 0
+# 末行：skip 归零，总数不变（本轮未单独跑这一模式）
 
 # 命令行用法：按模式分组列出旗标与退出码（exit 0）
 ./build/MochiBox.app/Contents/MacOS/MochiBox --help
@@ -67,12 +67,12 @@ MOCHI_SELFTEST_BROWSER=1 ./build/MochiBox.app/Contents/MacOS/MochiBox --selftest
 
 | 层 | 依赖 | 用例 / 断言 | 运行时长量级 | 缺桌面时行为 | 覆盖什么 | 不覆盖什么 |
 |---|---|---|---|---|---|---|
-| `contract` | node ≥ 18；无网络、无 GUI、无二进制 | 15 / 546 | ~13 秒 | 照常跑 | Agent 协议语义：信封、去重窗口、跳过判据、rpc/cheat 表、scan 分片、路径安全、Swift 域模型探针 | 真 WebView 的布局/绘制时序、真实引擎 |
-| `domain` | node ≥ 18 + 本机 `swiftc`（编译探针，只读 `Sources/`）；D9 另需二进制 + Aqua | 13 / 348 | ~37 秒 | 照常跑，D9 输出 SKIP（其余 8 个 case 不依赖桌面） | 持久化（库/设置）、脱敏与 0600、会话日志、韧性（合批/重试/熔断）、直通、缓存容量、全文导出/导入往返与语料清理、运行不改游戏目录 | 真实后端 RTT、真实游戏存档路径、UI 交互 |
+| `contract` | node ≥ 18；无网络、无 GUI、无二进制 | 19 / 888 | ~25 秒 | 照常跑 | Agent 协议语义：信封、去重窗口、跳过判据、rpc/cheat 表、scan 分片、路径安全、Swift 域模型探针；LCF 文本提取与 Marshal 数据层往返（18 / 19） | 真 WebView 的布局/绘制时序、真实引擎 |
+| `domain` | node ≥ 18 + 本机 `swiftc`（编译探针，只读 `Sources/`）；D9 另需二进制 + Aqua | 15 / 439 | ~64 秒 | 照常跑，D9 输出 SKIP（其余 14 个 case 不依赖桌面） | 持久化（库/设置）、脱敏与 0600、会话日志、韧性（合批/重试/熔断）、直通、缓存容量、全文导出/导入往返与语料清理、运行不改游戏目录 | 真实后端 RTT、真实游戏存档路径、UI 交互 |
 | `kernel` | 产品二进制 + Aqua（WindowServer）+ 夹具 | 14 / 165 | ~22 秒 | 每个 case 输出一条 `# SKIP` 后返回，整层不判失败 | 真 WKWebView 里 `--play` 的启动识别、注入、采集→翻译→回写、控制通道、关窗收尾；消息窗**绘制文本与字号**（K12） | 真游戏内容、像素/字形/断行、真实后端 RTT |
-| `faults` | 产品二进制 + Aqua | 10 / 55 | ~45 秒（F10 占满 100 个端口最慢） | 同 kernel | 401/429/500/非 JSON/endpoint 不可达/缺 index.html/未知引擎/控制门禁/端口占用 | 真实网络抖动、限流恢复曲线 |
+| `faults` | 产品二进制 + Aqua | 12 / 81 | ~45 秒（F10 占满 100 个端口最慢） | 同 kernel | 401/429/500/非 JSON/endpoint 不可达/缺 index.html/未知引擎/控制门禁/端口占用；`--play` 拒绝原生后端（F11）；原生后端缺 `Game.ini` / `Library=` 错配（F12） | 真实网络抖动、限流恢复曲线 |
 | `game` | 产品二进制 + Aqua + `MOCHI_E2E_GAME` | 2（未设环境变量时整层 SKIP，`cases=0`） | 取决于作品（分钟级） | 同 kernel | 真实 MV/MZ 作品上的启动与关闭路径 | 翻译质量、全流程通关、修改器写盘 |
-| `--selftest` | 仅产品二进制 | 75 条（74 pass / 1 skip） | 秒级 | 照常跑 | 域模型/Store/规则/CLI 分支的内建自检；C 组含 `reasoningOffMode` 的请求体字段与 400/422 去字段重发；**默认不拉浏览器**，`MOCHI_SELFTEST_BROWSER=1` 才有真浏览器生命周期用例 | 跨进程接线、GUI 交互 |
+| `--selftest` | 仅产品二进制 | 89 条（88 pass / 1 skip） | 秒级 | 照常跑 | 域模型/Store/规则/CLI 分支的内建自检；C 组含 `reasoningOffMode` 的请求体字段与 400/422 去字段重发；**默认不拉浏览器**，`MOCHI_SELFTEST_BROWSER=1` 才有真浏览器生命周期用例 | 跨进程接线、GUI 交互 |
 
 **为什么 kernel / faults / game 必须有桌面**：这三层跑的是产品真实的 `--play` 路径，
 它会构造 `NSWindow` + `WKWebView`。WKWebView 的渲染与网络进程由 **WindowServer** 托管，
@@ -88,7 +88,7 @@ error_code: kernel_no_desktop_session
 
 `contract` 与 `domain` 都不建窗口：前者用 `node:vm`，后者用 `swiftc` 编译小探针直接驱动产品类型
 （`build.sh` 的 UI 依赖门禁保证核心层不 import AppKit/SwiftUI）。两者的差别是：`contract` 连二进制都不要，
-是**唯一在无桌面、无构建产物的机器上能全量给出真实信号**的一层；`domain` 能跑 8/9，D9 需要真会话，
+是**唯一在无桌面、无构建产物的机器上能全量给出真实信号**的一层；`domain` 能跑 14/15，D9 需要真会话，
 缺桌面时它会 SKIP。
 
 ---
@@ -106,8 +106,9 @@ node Tests/e2e/lib/run.mjs --suite contract
 - 每个 case 是一个独立 node 进程，内部用 `node:vm` 载入**真** `Resources/agent_mvmz.js`；
   夹具用 `Fixtures/mv_stub/index.html` 的内联脚本原样跑（真 `$game*` / `$data*`）。
 - 时钟注入、显式步进：同一命令重复跑结果一致。
-- 13 个 case 覆盖：agent API、rpc/cheat 表、安全路径、信封协议、分段转义、去重竞态、
-  跳过语义、查找变体、双端 parity、Store 探针、域模型 QA。
+- 19 个 case 覆盖：agent API、rpc/cheat 表、安全路径、信封协议、分段转义、去重竞态、
+  跳过语义、查找变体、双端 parity、Store 探针、域模型 QA、数据补丁 / 战斗日志翻译、
+  LCF 文本提取、Marshal 数据层往返。
 
 ### 2.2 `domain`
 
@@ -210,21 +211,21 @@ bash Tests/e2e/run.sh --suite all
 ```
 
 逐层执行、逐层汇总；任一层有 `not ok` 即整体 exit 1 并打印 `failed_layers=`。
-本机（2026-10-26、有 Aqua）的分层实跑末行：`contract 15/546`、`domain 14/373`、
-`kernel 14/165`、`faults 10/55`、`game 2/11`。因此不设 `MOCHI_E2E_GAME` 时
-`--suite all` 应为 **53 cases / 1139 assertions**（game SKIP）；设真游戏则 **55 / 1150**。
+本机（2026-11-02、有 Aqua）的分层实跑末行：`contract 19/888`、`domain 15/439`、
+`kernel 14/165`、`faults 12/81`；不设 `MOCHI_E2E_GAME` 时 `game` 整层 SKIP，
+`--suite all` 实测 **60 cases / 1573 assertions**。设真游戏时再加上 game 层的计数（本轮未跑）。
 
 > 计数**只能**取自 run.sh 的末行，不要按套件手加：同一批用例在不同提交里出现过
 > 218 / 225 / 528 / 954 / 965 五组互相矛盾的旧值，全部是手算或跨提交混算的产物。
-> 本轮 `--suite all` 因真机验收占用 GUI 未跑，上表是四层**分别实跑**的末行求和，
-> 与 all 的汇总口径一致（all 只是逐层执行后把 cases/assertions 相加）。
+> 本轮 `--suite all` 已实跑，末行 `60 / 1573`；与上表四层一致（all 只是逐层执行后把
+> cases/assertions 相加）。
 
 **TAP 可重放**：断言名只写判据，实测毫秒/临时端口一律放 `#` 诊断行或 `not ok` 的 `#` 原因里。
 `--suite all` 连跑 2 次，`grep -E '^(ok|not ok)'` 的输出 `diff` 为空（断言名逐字节一致，状态不翻转）。
 时间只出现在 `# case … <ms>` 这类诊断行里 —— 它不影响上述 diff，也不该被当作判据。
 
-> 断言数会随用例增删而变化，**以 `run.sh` 末行为准**；本文所有数字是 2026-10-24 在本机实测的一次快照。
-无桌面时 kernel/faults/game 三层各输出 SKIP（`domain` 的 D9 也 SKIP，其余 13 个 case 照跑），
+> 断言数会随用例增删而变化，**以 `run.sh` 末行为准**；本文所有数字是 2026-11-02 在本机实测的一次快照。
+无桌面时 kernel/faults/game 三层各输出 SKIP（`domain` 的 D9 也 SKIP，其余 14 个 case 照跑），
 整体仍为 PASS——**但报告里不得把 SKIP 写成"已覆盖"**。
 
 **sha256 的可复现范围**：同一份源码在**同一 checkout 路径**下重复构建得到同一 sha256；
@@ -411,7 +412,7 @@ MOCHI_E2E=1 ./build/MochiBox.app/Contents/MacOS/MochiBox \
 | P0-15 | 字号缩放 | contract + kernel | `13_config_agent`（CFG-15…CFG-26）+ K12 | 中 | K12 断到内核层绘制字号 = round(28×fontScale)；滑杆 / ⌘+ / ⌘- 与数值持久化仅手工（持久化另见 D2）；Agent 侧不夹取越界（GAP-P0-15），夹取在 Swift 设置层（D2 已断 9.0→1.3） |
 | P0-16 | 停止与清理 | kernel | K9 / K10 | 中 | SIGTERM→3s→SIGKILL 顺序、⌘Q、端口释放均无断言 |
 | P0-17 | 无网络降级 | faults | F5 `05_endpoint_dead` | 弱 | `unsaved` 直通态与恢复网络后自愈未实现 / 无断言 |
-| P0-18 | `--selftest` | 自检 | `--selftest` 71 条（70 pass，1 条真浏览器用例 opt-in skip） | 强 | TAP 格式、失败退出码、`--filter`、「不建 NSApplication」无断言 |
+| P0-18 | `--selftest` | 自检 | `--selftest` 89 条（88 pass，1 条真浏览器用例 opt-in skip） | 强 | TAP 格式、失败退出码、`--filter`、「不建 NSApplication」无断言 |
 | P0-19 | 日志与导出 | domain | D4 `04_session_log` | 中 | 实现改为按份数保留 50（非 5×2MB，GAP-P0-19）；「导出诊断」未见实现 |
 | P0-20 | 设置持久化 | domain | D2 `02_settings_persist` | 强 | —（缺字段 / 类型非法 / 越界 / 损坏 / 只读均有断言） |
 | AC-9.1 | 状态快照 | contract | `02_agent_rpc` R-02 / R-03 / R-04 / T-001-H | 中 | 无「外部改引擎对象 → 快照跟随」的阳性对照 |
@@ -463,7 +464,7 @@ MOCHI_E2E=1 ./build/MochiBox.app/Contents/MacOS/MochiBox \
 
 - **旧探针已移除**：`Tests/qa/probe_channel.mjs`、`rpc_probe.mjs`、`scan_probe.mjs`、
   `run_stub_probes.sh` 以及 `Tests/e2e/play_e2e.sh` 已随统一入口重写删除；
-  它们的能力迁入 `contract` 的 13 个 case 与 `domain`/`kernel`/`faults` 层。
+  它们的能力迁入 `contract` 的 19 个 case 与 `domain`/`kernel`/`faults` 层。
   `Tests/qa/` 现存 `control_smoke.mjs`（控制通道 TAP 冒烟）、`frame_stats.swift`（截图帧统计）、
   `error_server.py`（域模型 QA 用）与 sha 清单，它们不参与 `run.sh` 的分层调度。
 - **Chromium / Playwright / CDP 不再是测试方式**：产品默认路径是内置 WKWebView，
@@ -472,5 +473,5 @@ MOCHI_E2E=1 ./build/MochiBox.app/Contents/MacOS/MochiBox \
   它默认 SKIP，只有显式 `MOCHI_SELFTEST_BROWSER=1` 才会起 Chromium。
 - **多版 QA 报告已合并**：`docs/qa-report.md` 是唯一当前有效报告；
   V0.2/V0.3/V0.4/V0.5 原文见 git 历史（路径列表见该报告 §5）。
-- **`Scripts/VERIFY.md` 是 V0.1 存档**（2026-10-20），其中 27/29 条 selftest 等数字已被 71 条取代，
+- **`Scripts/VERIFY.md` 是 V0.1 存档**（2026-10-20），其中 27/29 条 selftest 等数字已被 89 条取代，
   只作回溯用。

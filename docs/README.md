@@ -3,7 +3,7 @@
 # docs/ — 文档地图
 
 当前有效 **17 份 .md**（含本索引）、**1 份 html**、`assets/` 2 张截图；
-V0.1–V0.4 的历史文档与图表整齐归档在 [`archive/`](archive/)（18 个文件），不再混在根目录。
+V0.1–V0.4 的历史文档与图表整齐归档在 [`archive/`](archive/)（16 个文件），不再混在根目录。
 
 状态只有三种：`当前有效` / `历史证据（绑 <sha 或版本>）` / `存档`。
 
@@ -51,10 +51,10 @@ V0.1–V0.4 的历史文档与图表整齐归档在 [`archive/`](archive/)（18 
 
 | 目录 | 内容 | 状态 |
 |---|---|---|
-| [archive/v0.1/](archive/v0.1/) | `delivery-scope-v0.1.md`、`cdp-validation.md`（CDP 注入链路可行性）、`class-diagram.mermaid`、`sequence-diagram.mermaid` | 存档 |
-| [archive/v0.2/](archive/v0.2/) | `architecture-v0.2-web-runner.md`（零 Wine、静态托管、端口确定性派生）、`delivery-scope-v0.2.md`、`handover-v0.2.md`、`web-runner-class/sequence.mermaid` | 历史证据（绑 V0.2） |
+| [archive/v0.1/](archive/v0.1/) | `delivery-scope-v0.1.md`、`cdp-validation.md`（CDP 注入链路可行性） | 存档 |
+| [archive/v0.2/](archive/v0.2/) | `architecture-v0.2-web-runner.md`（零 Wine、静态托管、端口确定性派生）、`delivery-scope-v0.2.md`、`handover-v0.2.md`、`web-runner-class.mermaid`、`web-runner-sequence.mermaid` | 历史证据（绑 V0.2） |
 | [archive/v0.3/](archive/v0.3/) | `architecture-v0.3-fixes.md`、`handover-v0.3.md`、`bug11-host-fix.md`、`class-diagram-v0.3-fixes.mermaid`、`sequence-diagram-v0.3-fixes.mermaid` | 历史证据（绑 96a87474） |
-| [archive/v0.4/](archive/v0.4/) | `architecture-v0.4-embedded-kernel.md`（`PageChannel`、失败矩阵 E1–E15、AC-8 取证）、`kernel-v0.4-class/sequence.mermaid` | 历史证据（绑 V0.4） |
+| [archive/v0.4/](archive/v0.4/) | `architecture-v0.4-embedded-kernel.md`（`PageChannel`、失败矩阵 E1–E15、AC-8 取证）、`kernel-v0.4-class.mermaid`、`kernel-v0.4-sequence.mermaid` | 历史证据（绑 V0.4） |
 | [archive/handover-2026-10-27-dialogue-line-fallback.md](archive/handover-2026-10-27-dialogue-line-fallback.md) | 对白翻译失效的根因与逐行降级修复（8778dc7）验收记录 | 已闭合 |
 
 ## 三、资源

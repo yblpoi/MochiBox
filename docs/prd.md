@@ -198,11 +198,11 @@ MTool 是 Windows/Android 上的"游戏进程内注入 + 文本总线 + 翻译�
 
 取证方式（脚本名 / 截图）见 `docs/architecture-v0.6-cheat-and-fulltext.md` §8 的"取证"列。
 
-### 3.5 P2 需求（只列不做）
+### 3.5 P2 需求（除标注「已落地」外，只列不做）
 
 | ID | 需求 | 备注 |
 |---|---|---|
-| P2-01 | RGSS XP/VX/VXAce | 路线 A：`mkxp-z` 自编译 macOS 版 + Ruby 层 hook；路线 B：Wine/CrossOver 跑原版并复用 Windows DLL（成本最高） |
+| P2-01 | RGSS XP/VX/VXAce | **已落地（2026-11-02）**：路线 A 的 `mkxp-z` 自编译 macOS 版已接入、可启动；Ruby 层实时 hook 仍未做。路线 B（Wine/CrossOver）不做。证据见 `rpgmaker-runtime-verification.md` |
 | P2-02 | WOLF RPG Editor | 仅 Windows，依赖 Wine 后端 |
 | P2-03 | 吉里吉里（KAG3/krkrz） | 仅 Windows，依赖 Wine 后端 |
 | P2-04 | SiglusEngine | COM 替换，仅 Windows |
@@ -706,7 +706,7 @@ window.__mochibox = {
 
 `engineEvidence: [String]` 记录命中的相对路径（最多 5 条），供 UI"为什么这样判断"使用。`engineConfidence: high|medium|low`（命中强特征=high；仅弱特征如 `index.html`=low）。
 
-`supportLevel` 映射：`p0`→UI"可启动"；`p1`→"需 P1 适配器（未实现）"；`p2`→"暂不支持（需 Wine 后端）"；`none`→"不支持"；`unknown`→"未知"。
+`supportLevel` 映射：`p0`→UI"可启动"；`p1`→"需 P1 适配器（未实现）"；`p2`→"暂不支持（需 Wine 后端）"；`none`→"不支持"；`unknown`→"未知"。**展示层例外**：`launchBackend != nil && supportLevel == .p2` 的引擎（`easyrpg` / `rgss1` / `rgss2` / `rgss3`）显示「可启动（内置运行时）」（`rpgmaker-classic-compat.md` ADR-3）；上表的 `supportLevel` 列不变，识别契约仍按 p2 断言。
 
 ### A.2 启动与 attach 流程（MV/MZ）
 

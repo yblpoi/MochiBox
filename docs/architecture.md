@@ -457,6 +457,7 @@ struct Settings: Codable, Sendable {
 enum EngineKind: String, Codable, Sendable, CaseIterable {
     case renpy, kirikiri, mz, mv, easyrpg, rgss3, rgss2, rgss1
     case tyrano, wolf, unity, godot, siglus, unknown
+    var launchBackend: LaunchBackend?  // nwjsWeb / easyrpg / mkxpz；其余 nil
     var priority: Int { get }        // §A.1 顺序，越小越先命中
     var displayName: String { get }  // "RPG Maker MV" / "Ren'Py" ...
     var family: String { get }       // "mvmz"（缓存键的 engineFamily）
@@ -465,6 +466,7 @@ enum EngineKind: String, Codable, Sendable, CaseIterable {
 enum SupportLevel: String, Codable, Sendable {
     case p0, p1, p2, none, unknown
     var uiLabel: String { get }      // 可启动 / 需 P1 适配器（未实现）/ 暂不支持（需 Wine 后端）/ 不支持 / 未知
+    // p2 文案只作无后端引擎的兜底；easyrpg / rgss1-3 由 displaySupportLevel 派生
 }
 
 enum EngineReason: String, Codable, Sendable {
@@ -490,7 +492,8 @@ struct GameEntry: Codable, Identifiable, Sendable, Hashable {
     var lastLaunchedAt: Double?
     var launchCount: Int
     var missing: Bool
-    var isLaunchable: Bool { get }   // supportLevel == .p0 && !missing
+    var isLaunchable: Bool { get }   // launchBackend != nil && !missing
+    var displaySupportLevel: String { get }  // 有后端且 supportLevel == .p2 →「可启动（内置运行时）」，其余用 uiLabel
 }
 
 struct LibraryFile: Codable, Sendable {
