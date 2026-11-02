@@ -12,7 +12,7 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
 | 2000 / 2003 | — | EasyRPG Player 0.8.1（内置，33.9 MB universal） | 跑通：消息框与菜单渲染出中文 | A |
 | XP | RGSS1 | mkxp-z（自建，`f02d586`） | 跑通：标题→New Game→Map001→事件中文→菜单→行走 Step 0→5 | A |
 | VX | RGSS2 | mkxp-z 同一份 | 跑通：标题→地图→菜单→行走；脚本 = 官方默认集 + VX_SP2 + 3 行字体垫片 | B+ |
-| VX Ace | RGSS3 | mkxp-z 同一份 | 跑通：标题→地图→菜单；脚本 = 默认集 + **第三方 QuestSystem** + 字体垫片 | B |
+| VX Ace | RGSS3 | mkxp-z 同一份 | 跑通：标题→New Game→地图→行走（坐标 3,5→7,5→7,7）；脚本 = 默认集 129 段，第三方脚本已剔除 | A |
 
 **证据强度怎么算**（沿用 `acceptance-assertion-rules.md` 的分级思路）：
 
@@ -103,7 +103,9 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
   Font.default_size = 20
   ```
 
-  它解决的是日志里的 `Primary font not found: UmePlus Gothic` —— 测试机没有装 VX 的默认字体。
+  它原本是要解决日志里的 `Primary font not found: UmePlus Gothic`（测试机没装 VX 的默认字体）；
+  但 RGSS2 的 `Main` 同样是阻塞的，这段垫片大概率也从没执行过（VX 这一版未单独插桩验证），
+  出字应该是 mkxp-z 回退的结果。
 - **证据**：标题（`VX Test` / `VX TITLE` / `New Game` / `Continue` / `Shutdown`）
   → 地图 → 菜单（OCR 出 `Item Skill Equip Status Save Game End` 与角色名/HP/MP）
   → 行走。行走本次重新取证：先按右 8 次（相机跟随，画面稳定不动），再连续向左 10 次
@@ -130,24 +132,54 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
   不影响流程）。
 - **脚本集**：`caynine9/Jimicization-Project`（**CC0-1.0**）的 `PJSRH/Data/Scripts.rvdata2`
   （143,430 B），解出 **131 段**，追加垫片后 **132 段 / 143,630 B**。
-- **是否被改过（审计结论）**：**这不是"原版默认脚本"，是"默认脚本 + 一个第三方插件"**。
-  - 130 段是 RGSS3 默认布局：`▼ Modules`（Vocab/Sound/Cache/DataManager/SceneManager/BattleManager）、
-    `▼ Game Objects`、`▼ Sprites`、`▼ Windows`、`▼ Scenes`、
-    **`▼ Bug Fixes`（Star Passability Bug Fix / Event Jitter Fix，Enterbrain 官方自带）**、
-    `▼ Materials / ( Insert here )`、`▼ Main Process / Main`。
-  - 第 125 段 `QuestSystem` 是第三方脚本：`Basic Quest System v1.3f`，作者 V.M of D.T，
-    28,779 B / 979 行，重开了 `DataManager` / `Game_Party` / `Game_Player` / `Game_Event` /
-    `Game_Interpreter` / `Window_MenuCommand` / `Scene_Base` / `Scene_Map` / `Scene_Menu`。
-  - 默认段里被二次打开的类只有 `Game_Map`（被官方 `▼ Bug Fixes` 的两段改），
-    符合"默认脚本 + 官方修复"的原样形态。
+  本次把这 132 段逐段解包（用 `Sources/Adapters/Marshal` 写的一次性工具），
+  **剔除 3 段非 Enterbrain 来源的脚本**，重写成 **129 段 / 136,078 B / 19,927 行** 再跑：
+
+  | 原段号 | 段名 | 行数 | 判定依据 |
+  |---|---|---|---|
+  | 121 | `Star Passability Bug Fix` | 30 | 注释头署名 Neon Black，带 rpgmakerweb 论坛原帖链接 |
+  | 122 | `Event Jitter Fix` | 38 | 同上 |
+  | 125 | `QuestSystem` | 979 | `Basic Quest System v1.3f`，作者 V.M of D.T |
+
+  合计移除 **1,047 行**。重写后逐段比对：**129 段的段名、脚本 ID、解压后源码与原文件逐字节相同，
+  顺序不变**（同一工具读两份文件后按位比较）。
+
+  > 前一轮把 `▼ Bug Fixes` 两段记成"Enterbrain 官方自带"，这个说法站不住：两段正文都写着
+  > `by Neon Black`、给了社区论坛原帖链接，社区文档也把它们当"要自己加的修复片段"。
+  > 无论 VX Ace 的默认工程模板里是否预置这两段，它们都不是 Enterbrain 署名脚本，一并不算默认集。
+
+- **是否被改过（审计结论）**：
+  - 129 段 = 111 段默认内容（110 段默认脚本 + `▼ Materials / ( Insert here )` 模板占位）
+    + 17 个分区标题/空段 + 1 段我们的垫片。
+  - 剔除后**没有任何类被二次打开**：全量 103 个 `class` 定义，每个只出现一次；`module` 同样无重开。
+    剔除前唯一的重开是两段 Neon Black 补丁对 `Game_Map` 的改写。
   - 中文仍只出现在垫片段。
-- **证据**：标题（OCR 出作者工程的标题文字）→ 地图（真实地图数据，能出画面）→ 菜单
-  （截图与 OCR）。行走只记录了"按键后画面变化"，**没有坐标读数**。
+- **垫片其实不生效**（本轮实测）：垫片段排在 `Main` 之后，而 `Main` 里的 `SceneManager.run`
+  会阻塞到游戏退出，所以它从未执行 —— 插桩读到的 `Font.default_name` 仍是 `VL Gothic`，
+  日志里的 `Primary font not found: VL Gothic` 也没消失，文字是 mkxp-z 走系统字体回退渲染的。
+  垫片保留原位置（不改工程结构），但**不能再当成"字体修复"引用**。
+- **证据**：
+  - 标题：OCR 出 `DETUALANGAN / JIMI / SI RAJA HAREM`（工程标题数据）与
+    `Permainan Baru / Lanjutkan / Keluar`（New Game / Continue / Shutdown，默认
+    `Window_TitleCommand` + `Vocab` 渲染）→ 确认键进 New Game。
+  - 地图：进入 `Map001` 后先播一段 8 页开场文本（OCR 出印尼语剧情
+    `Banjarmachine adalah sebuah negeri yang tenteram…`），逐页确认到结束。
+  - 行走：静止对照 **0 px / 1.5 s**（地图完全静止，没有环境动画）；按右 4 格后帧差
+    **4,352 px**、变化区 `300×64`；按下 2 格后帧差 **4,808 px**、变化区 `50×192`。
+    每格 32 逻辑像素 = 64 设备像素，变化区尺寸与"4 格横移 / 2 格纵移 + 精灵宽度"的位移带吻合；
+    原地踏步只会在约一格的范围里变化，拉不出整条带。
+  - **坐标读数**（另跑一次，脚本集临时插一段只写日志的探针，测完即删）：`(3,5)`
+    → 右 ×4 → `(7,5)` → 下 ×2 → `(7,7)`。这是唯一一次改动脚本集的运行，只用于读数。
+  - 剔除前后对照：同一位置的地图画面与剔除前**逐像素相同（0 px 差）**；标题画面只有光标行不同。
+  - 启动日志除 `Primary font not found` 与渲染后端 BUG 提示外，**没有** `NameError` /
+    `uninitialized constant` / `LoadError`。
 - **限制**：
-  - 脚本集含第三方插件，不能拿来证明"Enterbrain 默认脚本逐字兼容"；证明的是
-    "mkxp-z 能执行 RGSS3 脚本集（默认 130 段 + 第三方 979 行）"。
+  - 脚本集来自 CC0 游戏工程，**不是官方安装副本**：本机没装 RPG Maker，做不了 byte-diff。
+    "默认脚本集"是结构审计结论（段名/顺序、无类重开、无第三方残留、剔除后零改动跑通），
+    不是哈希相等；也没有对 110 段逐行做语义比对。
+  - 地图没有可 OCR 的文本，"地图可见"靠像素统计 + 与剔除前逐像素相同来证；
+    行走的坐标读数来自插桩运行，干净那一次只有像素位移证据。
   - 素材是作者的原创图（CC0），不是 RTP；音频全缺（`No soundfont specified, sound might be mute`）。
-  - 行走证据强度低于 XP。
 
 ## 脚本来源审计（结论先写）
 
@@ -155,12 +187,13 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
 |---|---|---|
 | 来源 | rgssad-rs 测试工程 `RPGMakerVXTestGame`（Git LFS 实体） | `caynine9/Jimicization-Project`（作者自建工程 `PJSRH`） |
 | 许可 | MIT 或 Apache-2.0（双许可，任选其一） | CC0-1.0 |
-| 原始大小 | 108,286 B / 98 段 | 143,430 B / 131 段 |
+| 原始大小 | 108,286 B / 98 段 | 143,430 B / 131 段（加垫片后 143,630 B / 132 段） |
 | 入库状态 | **不入库**，只在临时目录 | **不入库**，只在临时目录 |
-| 我们的改动 | 追加 3 行 `MKXP Font Shim`（+201 B，尾段） | 同左（+200 B，尾段） |
-| 默认脚本是否被动过 | 没有。`VX_SP2` 是 Enterbrain 官方补丁段（`eb_sp1_`/`eb_sp2_` 前缀、日文官方注释） | 没有。默认段只被官方 `▼ Bug Fixes` 重开 |
-| 额外内容 | 无 | `QuestSystem`（第三方，Basic Quest System v1.3f） |
-| 能不能说"默认脚本兼容" | **能**，限定为"VX 默认脚本集（含官方 VX_SP2 补丁）" | **不能**，只能说"引擎能执行 RGSS3 脚本集" |
+| 我们的改动 | 追加 3 行 `MKXP Font Shim`（+201 B，尾段） | 追加 4 行 `MKXP Font Shim`（+200 B，尾段）；**另剔除 3 段 / 1,047 行第三方脚本** |
+| 剔除后 | — | 136,078 B / 129 段 / 19,927 行 |
+| 默认脚本是否被动过 | 没有。`VX_SP2` 是 Enterbrain 官方补丁段（`eb_sp1_`/`eb_sp2_` 前缀、日文官方注释） | 没有。剔除的 3 段都在默认清单之外；剔除后无类重开 |
+| 额外内容 | 无 | 无（`QuestSystem` 与两段 Neon Black 补丁已剔除） |
+| 能不能说"默认脚本兼容" | **能**，限定为"VX 默认脚本集（含官方 VX_SP2 补丁）" | **能**，限定为"VX Ace 默认脚本集（110 段默认脚本），剔除第三方后零改动跑通" |
 
 为什么不下"逐字节等于 Enterbrain 官方文件"的结论：这台机器上没有装 RPG Maker，
 拿不到官方安装目录里的那份 `Scripts.*` 做 byte-diff。上面的结论来自**结构审计**
@@ -194,9 +227,10 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
    | VX Ace | `Graphics/Characters/*.png` | 96×128（单个角色，3 帧 × 4 方向） |
 
    窗口客户区：XP 640×480，VX / VX Ace 544×416（窗口外框多 32 px 标题栏）。
-4. **字体**：测试机没有 `UmePlus Gothic` / `VL Gothic` / `Arial`，中文靠垫片指到系统字体；
-   垫片必须放在脚本归档的**最后一段**（`Main` 之后），否则 `Font.default_name` 会被
-   默认脚本覆盖。
+4. **字体**：测试机没有 `UmePlus Gothic` / `VL Gothic` / `Arial`，实际出字靠 mkxp-z 的
+   系统字体回退。**垫片放在 `Main` 之后不会执行**：`Main` 里的 `SceneManager.run` 一直阻塞到
+   游戏退出（VX Ace 实测 `Font.default_name` 仍是 `VL Gothic`）。要让垫片生效，得插在
+   `Main` **之前**；本轮为保持工程结构没挪。
 5. **合成地图的通行性**：VX 的 `Map001` 若全铺同一种图块，先查
    `System.rvdata` 的 `@passages[tile_id]`（8192 项、int16）。方向位含义：
    `0x01` 下 / `0x02` 左 / `0x04` 右 / `0x08` 上，`0x10` = 不影响通行，`0x0f` = 四向全挡。
@@ -206,8 +240,8 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
 
 1. **没有官方默认脚本的字节级副本**：本机未安装 RPG Maker，无法做
    "解出来的段 == 安装目录里的段"的 byte-diff。VX/VX Ace 的"未改动"是结构审计结论。
-2. **VX Ace 脚本集含第三方插件**（QuestSystem），因此 VX Ace 的结论只能是
-   "引擎能执行 RGSS3 脚本"，不是"默认脚本兼容"。
+2. **VX Ace 的"默认脚本集"是结构审计结论**：129 段来自 CC0 工程，剔除 3 段第三方脚本后
+   零改动跑通；但没有官方副本做 byte-diff，也没有对 110 段逐行做语义比对。
 3. **VX 行走没有数值读数**：本次用帧差分证明位移（8,192 px），旧记录里的 "x 8→99"
    没有留存读数，不要当证据引用。
 4. **mkxp-z 还没打包进 `.app`**：`Contents/Resources/runtime/` 目前只有
