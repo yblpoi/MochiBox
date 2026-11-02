@@ -16,7 +16,7 @@
 #     1) `-Dworkdir_current=true` —— 保留启动方给的 cwd，挂载根因此 = 游戏目录；
 #     2) macOS 上的三个补丁（createPathCache 的 iconv/PHYSFS 崩溃修复 + 字体回退），
 #        见 vendor/mkxpz/mochibox-macos-fixes.patch。
-#   GameLauncher.launchMKXPZ 把子进程 cwd 设成游戏目录，**不复制 42MB 到用户目录**。
+#   GameLauncher.launchMKXPZ 把子进程 cwd 设成游戏目录，**不复制 35MB 到用户目录**。
 #
 #   许可: mkxp-z 是 GPL-2.0-or-later。分发的二进制因此必须随附对应的修改后源码，
 #        补丁在 vendor/mkxpz/（入库），上游 commit 记在 .sha256 里。
@@ -55,7 +55,7 @@ check_workdir_current() {
 
 write_stamp() {
   local src_sha="${1:-unknown}"
-  printf 'source-sha256 %s\nsource-size   %s\nbin-sha256    %s\nbin-size      %s\nbuild         workdir_current=true; darwin-arm64; ad-hoc resigned\n' \
+  printf 'source-sha256 %s\nsource-size   %s\nbin-sha256    %s\nbin-size      %s\nbuild         workdir_current=true; darwin-arm64; strip=all; ad-hoc resigned\n' \
     "$src_sha" "${2:-0}" "$(sha "$BIN")" "$(size "$BIN")" > "$STAMP"
 }
 
@@ -87,6 +87,17 @@ SRC_SIZE="$(size "$MKXPZ_BINARY")"
 echo "==> mkxpz: 拷贝 $(basename "$MKXPZ_BINARY") ($SRC_SIZE bytes)"
 cp "$MKXPZ_BINARY" "$BIN" || { echo "error: 拷贝失败" >&2; exit 1; }
 chmod +x "$BIN"
+
+# --- 体积：剥离符号 ---------------------------------------------------------
+# 上游产物带 137,139 个符号，__LINKEDIT 占 8,324,496 B（符号表 6,777,728 B）。
+# meson 的 `-Dstrip=true` **只在 `meson install` 时**生效；我们是直接消费 builddir
+# 的二进制，所以在这里补一次等价的 `strip`（不带参数 = 删掉 dyld 不需要的全部符号，
+# 语义同 Xcode 的 "Strip Style: All Symbols"）。
+# 实测 42,075,536 B → 35,448,032 B；strip 会作废签名，因此必须放在重签**之前**。
+# 不要用 upx：macOS 上会破坏代码签名，且被杀软误报。
+PRE_STRIP_SIZE=$(size "$BIN")
+strip "$BIN" 2>/dev/null || { echo "error: strip 失败（产物未改，不要发包）" >&2; exit 1; }
+echo "==> mkxpz: strip $PRE_STRIP_SIZE → $(size "$BIN") bytes"
 
 # 与 easyrpg 同一口径：先单独 ad-hoc 签，免得用户看到"签名损坏"。
 codesign -s - --force --identifier org.mkxp-z.runtime "$BIN" 2>/dev/null \

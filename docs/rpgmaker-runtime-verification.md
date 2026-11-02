@@ -52,7 +52,9 @@
 
 - **运行时**：mkxp-z 自建。上游 commit `f02d586624dc53de373889cc16d9b1516da0a3a5`
   （2026-10-31，merge PR #390），meson + ninja 全源码构建（`forcefallback`），
-  产物 **42,075,568 B（40.1 MiB）**，`minos 13.0`，`otool -L` 里 `/opt/homebrew` 计数 **0**。
+  构建产物 **42,075,536 B（40.1 MiB）**；strip 掉全部符号后分发体 **35,448,032 B（33.8 MiB）**，
+  符号数 137,139 → 1,929。`minos 13.0`，`otool -L` 里 `/opt/homebrew` 计数 **0**。
+  strip 参数与复现步骤见 `vendor/mkxpz/BUILD.md`。
 - **版本识别原文**（日志首行）：
 
   ```
