@@ -106,10 +106,12 @@ MochiBox 只做两件事——把目录**只读**托管在回环地址上，再�
 | 项 | 说明 |
 |---|---|
 | 平台 | macOS 13 及以上，构建产物为 Apple Silicon（arm64） |
-| 引擎 | **RPG Maker MV / MZ** 可启动；XP / VX / VX Ace / 2000、Wolf、Ren'Py、吉里吉里、TyranoBuilder、Unity、Godot、Siglus 仅识别，不能起会话 |
+| 引擎 | **RPG Maker MV / MZ** 可启动；**2000 / 2003** 可启动（EasyRPG + PO 预翻译，无实时通道）；**XP / VX / VX Ace** 可启动（mkxp-z + 实时文本通道，覆盖对话/菜单/选项/帮助/战斗日志 5 个面）；Wolf、Ren'Py、吉里吉里、TyranoBuilder、Unity、Godot、Siglus 只识别引擎、不启动会话 |
 | 发行版 | Windows 版（无需 Wine）、macOS 版 |
 | 语言 | 日本語 → 简体中文（固定，设置页只读） |
 | 翻译后端 | OpenAI 兼容 / DeepL / 直通（离线） |
+
+> **限制**：2000/2003 只有 PO 预翻译，游戏内没有实时通道，脚本生成的内容盖不住；PO 文件需放在游戏目录的 `language/` 下。XP / VX / VX Ace 的实时通道只改显示层（存档与事件状态不变），首遍显示原文、同一句缓存命中后才显示中文；商业游戏与第三方脚本尚未验证。
 
 ## 常见问题
 

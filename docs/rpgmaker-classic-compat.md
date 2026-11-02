@@ -209,7 +209,7 @@ XP / VX 两个外部样本**事件层**为空（Map 的 `@events` 空、`CommonE
 | Phase 3 | 接线 | `launchBackend` 静态表、`LaunchStrategy.nativeRuntime`、适配器构造、`displaySupportLevel` 派生、六处能力门、`--play-native` |
 | Phase 4 | 运行时 | 2000/2003 走 EasyRPG + PO 预翻译（0.8.1 只认游戏目录内的 language/：自编 master，或复制数据 + `--project-path`）；**游戏内无实时通道**，文本流只在 MochiBox 侧可见；静态文本接近全覆盖，脚本生成的内容盖不住。RGSS 三版用 mkxp-z + Ruby hook 做实时 |
 
-落地状态（2026-11-02）：**Phase 1–3 已完成**；Phase 4 的**启动**部分已完成（EasyRPG 与 mkxp-z 都装进 `.app`，`--play-native` 能拉起），**Ruby 层实时 hook 未做**——RGSS 游戏目前只有启动与数据层，游戏内文本通道仍缺。上表保留为决策记录。
+落地状态（2026-11-02）：**Phase 1–3 已完成**；Phase 4 的**启动**与 **RGSS 实时文本通道**都已完成：EasyRPG 与 mkxp-z 都装进 `.app`，`--play-native` 能拉起；XP / VX / VX Ace 的 Ruby hook 已由 `GameLauncher` 注入 `preloadScript`，覆盖 message / menu / choice / help / battle 五个面，五个面默认全开。首遍仍显示原文，缓存命中后显示中文；只改显示层，不动存档与事件状态。2000/2003 仍只有 EasyRPG + PO 预翻译，没有游戏内实时通道。实现、入口清单与真机证据见 [`rgss-text-channel.md`](rgss-text-channel.md) §0.1。上表保留为决策记录。
 
 若要做 2000/2003 的**实时**翻译，需 fork EasyRPG 加 IPC 回调，XL 成本，非刚需不做。
 

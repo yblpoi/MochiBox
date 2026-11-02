@@ -17,6 +17,34 @@ PENDING + 原文，游戏主线程绝不等网络。**
 - Ruby 侧 `json` / `net/http` / `yaml` / `uri` / `time` / `date` 等一律 `LoadError`；协议必须手写。
 - 实测 mkxp-z 的 socket 只有 `TCPSocket`，**没有 `Socket.tcp`**（hook 日志：`Socket.tcp=no TCPSocket=yes`）。
 
+### 0.1 覆盖的界面清单
+
+hook 按“有语义的上层入口”分面，不逐字拦截绘制。五个面**默认全开**；
+`MOCHI_RGSS_SURFACES`（逗号分隔）可以把范围收窄到其中任意几个，空值 = 全开，
+`none` = 一个都不挂（只做原文直通）。白名单只认 `message,menu,choice,help,battle`，
+未知名字会记 `unknown surfaces ignored: ...` 后忽略。
+
+| 面 | 入口 | XP | VX | VX Ace | 证据 |
+|---|---|---|---|---|---|
+| message | `Window_Message#refresh` / `#start_message` / `#process_all_text` | 独立 | 独立 | 独立 | 真机截图（XP §7.1；VX §8.1） |
+| menu | `Window_Command#draw_item` | 独立 | 独立 | 独立 | 假类断言 |
+| choice | `Window_ChoiceList#start` / `#draw_item` | 并入 message | 并入 message | 独立 | 假类断言 |
+| help | `Window_Help#set_text` | 独立 | 独立 | 独立 | 假类断言 |
+| battle | `Window_BattleMessage#add_instant_text` / `#replace_instant_text`；`Window_BattleLog#add_text` / `#replace_text` | 并入 message | 独立 | 独立 | 假类断言 |
+
+“独立”指该版本有单独的类/方法，hook 直接挂它；“并入 message”指该版本没有独立入口，
+文本走 `Window_Message` 的入口，hook 在消息面里一并处理（日志会写
+`choice on RGSS2 has no separate entry; it rides message`）。
+
+**choice / battle 目前只有假类断言**：当前 VX 测试工程的 `Map001` 事件表为空（没有 102
+「显示选项」事件），`Troops.rvdata` 的敌群成员也为空、没有战斗图，触发不了真实的选择界面和
+战斗界面。补这两面需要带事件/敌群成员的工程，不能用假类断言冒充真机证据。
+
+**不 hook `Window_Base#draw_text`。** 它是逐字调用的：一次 `draw_text` 只拿到一个字，
+单字送翻译会丢语义（`こ` / `ん` / `に` 各翻一次），请求量也按字符数放大。hook 只认
+`Window_Message` / `Window_Command` / `Window_Help` / `Window_BattleMessage` /
+`Window_BattleLog` 上有语义的入口，改的是“这一行 / 这一项”的字符串，再让原方法按原样渲染。
+
 ## 1. 为什么不能用 `customScript`
 
 mkxp-z 的 `binding-mri.cpp:1297-1301`：
@@ -583,7 +611,8 @@ cd /tmp/xp-run && ./shot /tmp/xp-run/hook-msg.png
   `TranslationPipeline` / `TranslationCache` / `TranslatorProvider`；控制符分段复用
   `LegacyEscapeCodec`；缓存落盘、重启命中（§8.1）。
 - ~~控制符感知分段。~~ 已完成（只送 text 段 + 回填后逐项校验）。
-- 待做：服务端持久化连接 / 批量请求 / 失败指标；只对白名单场景（对话、选项、滚动文本）开启，
-  避免把菜单/调试文本也送进翻译管线。
+- 待做：服务端持久化连接 / 批量请求 / 失败指标。五个面（message / menu / choice /
+  help / battle）**已默认全开**（§0.1）；需要收窄时用 `MOCHI_RGSS_SURFACES` 裁剪，
+  菜单/调试文本默认也会进翻译管线——这是有意为之，不再是待办。
 - 待做：把 RGSS 的**数据层**（Map / CommonEvent / Terms 的 401 文本）也预译进同一份缓存，
   这样首次对话就能命中，而不是“首遍原文、次遍中文”。
