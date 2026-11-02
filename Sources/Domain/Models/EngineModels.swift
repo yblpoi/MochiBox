@@ -15,6 +15,8 @@ import Foundation
 enum LaunchBackend: String, Sendable {
     case nwjsWeb
     case easyrpg
+    /// 内置 mkxp-z：RGSS1/2/3 的通用重实现。单进程、无页面通道。
+    case mkxpz
 }
 
 /// 引擎种类。`priority` 对应 PRD §A.1 的固定优先级（越小越先命中）。
@@ -91,12 +93,15 @@ enum EngineKind: String, Codable, Sendable, CaseIterable {
 
     /// 静态穷举表：新增引擎时编译器强制回答"能不能启动"。
     /// 只表达"有没有启动后端"，与 supportLevel（声明级别）解耦。
-    /// rgss1/2/3 暂为 nil —— mkxp-z 运行时在本机 FileSystem::createPathCache
-    /// SIGSEGV（根因未定），接上去会让用户点了启动然后崩。
+    ///
+    /// rgss1/2/3 共用 mkxp-z 后端：三代的差别只在 Game.ini 的 Library=
+    /// （RGSS104E.dll / RGSS202E.dll / RGSS300.dll），启动前由
+    /// GameLauncher.validateMKXPZGameIni 校验，不需要三个后端。
     var launchBackend: LaunchBackend? {
         switch self {
         case .mv, .mz: return .nwjsWeb
         case .easyrpg: return .easyrpg
+        case .rgss1, .rgss2, .rgss3: return .mkxpz
         default: return nil
         }
     }

@@ -70,8 +70,9 @@
   静态 meson 构建链的是自带 `libiconv`，没有 Apple 专有的 `utf-8-mac`；
   `iconv_open()` 返回 `(iconv_t)-1` 但代码没检查，`toNFC()` 把该值交给 `iconv()`，
   崩在 `libiconv → CacheEnumData → PHYSFS_enumerate → FileSystem::createPathCache`，
-  也就是日志停在 `Loading path cache...` 之后。当前这份二进制**没有**该问题
-  （原因见上：构建配置不同，不是改代码绕的）。
+  也就是日志停在 `Loading path cache...` 之后。验证用的二进制靠构建配置（`iconv_system=enabled`）
+  避开了它；**随包分发的 mkxp-z 另有代码级防护**（`iconv_open` 失败即跳过归一化 +
+  `PHYSFS_stat` 失败分支），见 `vendor/mkxpz/mochibox-macos-fixes.patch`。
 - **限制**：脚本集取自 OpenXP 测试工程（MIT 覆盖不到 Enterbrain 默认脚本），
   本次**未逐节审计**；素材全是占位图；未验证任何商业 XP 游戏。
 
@@ -274,10 +275,13 @@
    没有官方副本做 byte-diff，也没有对 110 段逐行做语义比对。
 3. **VX 行走没有数值读数**：本次用帧差分证明位移（8,192 px），旧记录里的 "x 8→99"
    没有留存读数，不要当证据引用。
-4. **mkxp-z 还没打包进 `.app`**：`Contents/Resources/runtime/` 目前只有
-   `easyrpg-player`；`LaunchBackend` 也没有 `mkxpz` 这一档，所以
-   `EngineKind.rgss1/2/3.launchBackend` 仍是 `nil`（`Tests/e2e/cases/contract/qa_probe.swift`
-   的 V6-30..33 钉住这个状态，接后端时会红，提醒同步本文）。
+4. **mkxp-z 已接入产品路径（2026-11-02）**：`LaunchBackend` 新增 `mkxpz`，
+   `rgss1/2/3.launchBackend` 不再是 `nil`；`Scripts/fetch-mkxpz.sh` 取运行时、
+   `Scripts/build.sh` Step 2.7 打进 `Contents/Resources/runtime/mkxp-z`。
+   启动前由 `GameLauncher.validateMKXPZGameIni` 校验 `Game.ini` 的 `Library=` 与
+   检测引擎一致（错配抛 `runtime_version_mismatch`，缺 `Game.ini` 抛 `game_ini_missing`）。
+   **挂载根靠构建选项 `-Dworkdir_current=true`**（不是命令行参数）：launcher 把子进程
+   cwd 设成游戏目录即可，不复制二进制到用户目录。构建记录与补丁见 `vendor/mkxpz/`。
 5. **没有音频、没有 RTP**：三代都用占位图，`No soundfont specified` 是预期日志。
 6. **未验证任何商业游戏**：四个 fixture 都是测试工程/合成工程，
    真实国产 XP/VX 游戏常依赖 Win32API 与外部 DLL，mkxp-z 跑不动。

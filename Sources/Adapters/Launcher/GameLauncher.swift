@@ -117,6 +117,8 @@ actor GameLauncher {
         switch engine.launchBackend {
         case .easyrpg:
             return try GameLauncher.resolveEasyRPGStrategy(gameRoot: root)
+        case .mkxpz:
+            return try GameLauncher.resolveMKXPZStrategy(gameRoot: root, engine: engine)
         case .nwjsWeb, .none:
             break
         }
@@ -261,6 +263,143 @@ actor GameLauncher {
                 + tried.joined(separator: " | ")
                 + "。修复：bash Scripts/fetch-easyrpg.sh 后重新构建"
         )
+    }
+
+    // MARK: - 原生运行时查找（mkxp-z，RGSS1/2/3）
+
+    /// mkxp-z 的三段式查找，与 `resolveEasyRPGStrategy` 同构（顺序、错误码语义都一致）。
+    ///
+    /// 与 EasyRPG 的差别只有一处：mkxp-z 的挂载根**不是命令行参数**，而是进程的当前工作目录
+    /// （见 `launchMKXPZ`）。这里只负责找到二进制。
+    nonisolated static func resolveMKXPZStrategy(
+        gameRoot: URL,
+        engine: EngineKind,
+        runtimeCandidates: [URL]? = nil
+    ) throws -> LaunchStrategy {
+        let manager = FileManager.default
+        var candidates: [URL] = []
+        if let runtimeCandidates {
+            candidates = runtimeCandidates
+        } else {
+            candidates.append(
+                Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/runtime/mkxp-z")
+            )
+            if let resource = Bundle.main.resourceURL {
+                candidates.append(resource.appendingPathComponent("runtime/mkxp-z"))
+            }
+            if let repo = repositoryRoot() {
+                candidates.append(repo.appendingPathComponent("vendor/runtime/mkxp-z"))
+            }
+        }
+
+        var tried: [String] = []
+        var notExecutable: [String] = []
+        for candidate in candidates {
+            tried.append(candidate.path)
+            guard manager.fileExists(atPath: candidate.path) else { continue }
+            if manager.isExecutableFile(atPath: candidate.path) {
+                return .nativeRuntime(executable: candidate, engine: engine)
+            }
+            notExecutable.append(candidate.path)
+        }
+
+        if !notExecutable.isEmpty {
+            throw MochiBoxError(
+                code: .runtimeNotExecutable,
+                message: "内置 mkxp-z 运行时没有执行权限（detail: runtime_not_executable）。路径："
+                    + notExecutable.joined(separator: " | ")
+                    + "（chmod +x 即可）"
+            )
+        }
+        throw MochiBoxError(
+            code: .runtimeMissing,
+            message: "找不到内置 mkxp-z 运行时（detail: runtime_missing）。已尝试："
+                + tried.joined(separator: " | ")
+                + "。修复：bash Scripts/fetch-mkxpz.sh 后重新构建"
+        )
+    }
+
+    // MARK: - mkxp-z 前置校验（Game.ini）
+
+    /// 读 Game.ini 的 `Library=` 并映射到引擎；映射不出来返回 nil。
+    ///
+    /// 只看前缀而不是全等：真实工程里这一行是各样的 DLL——RGSS104E.dll（XP 1.04）、
+    /// RGSS202E.dll（VX 2.02）、RGSS300.dll / RGSS301.dll（VX Ace）、日文版的
+    /// RGSS103J.dll、民间汉化改名的 RGSS202E_cn.dll……全等匹配会把大半游戏挡在门外。
+    nonisolated static func mkxpzEngine(forLibrary library: String) -> EngineKind? {
+        let name = library.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if name.hasPrefix("RGSS3") { return .rgss3 }
+        if name.hasPrefix("RGSS2") { return .rgss2 }
+        if name.hasPrefix("RGSS1") { return .rgss1 }
+        return nil
+    }
+
+    /// 从游戏目录读 Game.ini 的 `Library=` 原始值。缺失/读不出这一行 → `gameIniMissing`。
+    ///
+    /// 编码：Game.ini 由 RM 编辑器写出，可能是 ANSI（按系统代码页）或 UTF-16LE（带 BOM）。
+    /// `Library=` 本身是纯 ASCII，所以两条解码路径都能拿到它；解不出可读文本时退回
+    /// Latin-1（逐字节保真），只求不把 ASCII 行弄丢。
+    nonisolated static func mkxpzGameIniLibrary(gameRoot: URL) throws -> String {
+        let url = gameRoot.appendingPathComponent("Game.ini")
+        guard let data = try? Data(contentsOf: url) else {
+            throw MochiBoxError(
+                code: .gameIniMissing,
+                message: "游戏目录里没有 Game.ini（detail: game_ini_missing）。路径：\(url.path)"
+                    + "。mkxp-z 靠它读 Library= 与 Scripts=，缺了只会黑屏。"
+            )
+        }
+
+        let text: String
+        if data.count >= 2, data[data.startIndex] == 0xFF, data[data.startIndex + 1] == 0xFE {
+            text = String(data: data.dropFirst(2), encoding: .utf16LittleEndian) ?? ""
+        } else if let utf8 = String(data: data, encoding: .utf8) {
+            text = utf8
+        } else {
+            // 逐字节保真：只求不把 ASCII 的 `Library=` 行弄丢。
+            text = String(data: data, encoding: .isoLatin1) ?? ""
+        }
+
+        // 必须用 CharacterSet.newlines 而不是与 "\n" 比较：Swift 把 CRLF 当成**一个**
+        // Character（grapheme cluster），`$0 == "\n"` 在 CRLF 上恒为 false ——
+        // 而 RM 编辑器写出的 Game.ini 正是 CRLF（自测 mkxpz_game_ini_missing 抓到的）。
+        for rawLine in text.components(separatedBy: CharacterSet.newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[line.startIndex..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+            if key == "library" {
+                let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { return value }
+            }
+        }
+        throw MochiBoxError(
+            code: .gameIniMissing,
+            message: "Game.ini 里没有 Library= 行（detail: game_ini_missing）。路径：\(url.path)"
+        )
+    }
+
+    /// 启动前的一致性门禁：Game.ini 的 Library 必须与检测到的引擎对得上。
+    ///
+    /// 为什么必须挡：mkxp-z 的 RGSS 版本由 Library 决定，而我们的引擎标签来自目录特征
+    /// （Data/*.rvdata2、Game.rgss3a…）。两者不一致时进程**照样起得来**，只是脚本引擎
+    /// 与数据格式错配 —— 用户看到的是一块黑屏或立刻退出，没有任何错误提示。
+    nonisolated static func validateMKXPZGameIni(gameRoot: URL, engine: EngineKind) throws {
+        let library = try mkxpzGameIniLibrary(gameRoot: gameRoot)
+        guard let declared = mkxpzEngine(forLibrary: library) else {
+            throw MochiBoxError(
+                code: .runtimeVersionMismatch,
+                message: "Game.ini 的 Library=\(library) 不是已知的 RGSS 版本（detail: runtime_version_mismatch）。"
+                    + "检测到的引擎：\(engine.displayName)（\(engine.rawValue)）。路径："
+                    + gameRoot.appendingPathComponent("Game.ini").path
+            )
+        }
+        guard declared == engine else {
+            throw MochiBoxError(
+                code: .runtimeVersionMismatch,
+                message: "Game.ini 的 Library=\(library) 对应 \(declared.displayName)，"
+                    + "但目录被识别为 \(engine.displayName)（detail: runtime_version_mismatch）。路径："
+                    + gameRoot.appendingPathComponent("Game.ini").path
+            )
+        }
     }
 
     /// 开发期定位仓库根：从 `#filePath` 逐级往上找含 `Scripts/build.sh` 的目录。
@@ -422,6 +561,9 @@ actor GameLauncher {
         case .nwjsApp(let executable, let layout):
             return try launchNWJS(executable: executable, layout: layout, gameRoot: gameRoot, log: log)
         case .nativeRuntime(let executable, let engine):
+            if engine.launchBackend == .mkxpz {
+                return try launchMKXPZ(executable: executable, engine: engine, gameRoot: gameRoot, log: log)
+            }
             return try launchNativeRuntime(
                 executable: executable,
                 engine: engine,
@@ -604,6 +746,74 @@ actor GameLauncher {
             "engine": engine.rawValue,
             "save": saveRoot.path
         ])
+        return handle
+    }
+
+    /// mkxp-z 启动（RGSS1/2/3）：单进程，没有调试端口、没有静态服务、没有 Agent。
+    ///
+    /// **挂载根 = 子进程的当前工作目录**。这不是猜的：`src/main.cpp` 在没有
+    /// `WORKDIR_CURRENT` 时会把 cwd 强制成"可执行文件所在目录"（在 .app 里则是包外目录），
+    /// 所以 `cd` 之后启动无效、`mkxp.json` 的 `gameFolder` 也只对包外二进制有效。
+    /// 随包分发的 mkxp-z 用 `-Dworkdir_current=true` 构建（Scripts/fetch-mkxpz.sh），
+    /// 这里把 `workingDirectory` 设成游戏目录即可。**不要**改成把二进制复制进游戏目录。
+    ///
+    /// 不传任何参数：mkxp-z 的 argv 只认 `debug` / `test` / `btest` 三个词，其余会被塞进
+    /// Ruby 的 `$ARGV`；`--no-audio` 之类并不存在，传了等于给游戏塞脏参数。
+    ///
+    /// 存档位置沿用 mkxp-z 自己的 pref 目录（按 `dataPathOrg`/`dataPathApp`），本产品不做
+    /// 按 gameHash 的隔离 —— 那需要 `mkxp.json`，而配置文件按设计不可写（见上）。
+    private func launchMKXPZ(
+        executable: URL,
+        engine: EngineKind,
+        gameRoot: URL,
+        log: SessionLog?
+    ) throws -> LaunchHandle {
+        try GameLauncher.validateMKXPZGameIni(gameRoot: gameRoot, engine: engine)
+
+        paths.ensureDirectories()
+        let gameHash = WebPortAssignments.gameHash(for: gameRoot)
+        let logURL = paths.logsDirectory
+            .appendingPathComponent("mkxpz-\(Timestamp.fileStamp())-\(gameHash.prefix(8)).log")
+
+        log?.info("GameLauncher", "启动 mkxp-z", [
+            "exe": executable.path,
+            "engine": engine.rawValue,
+            "cwd": gameRoot.path,
+            "gameHash": gameHash
+        ])
+
+        let process: Process
+        do {
+            process = try ChildProcessLauncher.launch(
+                executable: executable,
+                arguments: [],
+                workingDirectory: gameRoot,
+                logURL: logURL
+            ).process
+        } catch {
+            throw MochiBoxError(
+                code: .runtimeNotExecutable,
+                message: "内置 mkxp-z 运行时启动失败：\(error.localizedDescription)",
+                underlying: "\(error)"
+            )
+        }
+
+        running[process.processIdentifier] = process
+        ChildProcessRegistry.shared.register(process.processIdentifier)
+        let handle = LaunchHandle(
+            pid: process.processIdentifier,
+            port: 0,
+            executableURL: executable,
+            arguments: [],
+            gameRoot: gameRoot,
+            logURL: logURL,
+            startedAt: Date(),
+            transport: .nativeRuntime,
+            web: nil,
+            embedded: nil,
+            closed: nil
+        )
+        log?.info("GameLauncher", "mkxp-z 已启动", ["pid": "\(handle.pid)", "engine": engine.rawValue])
         return handle
     }
 

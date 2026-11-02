@@ -234,6 +234,32 @@ else
   echo "          （需要时跑: bash Scripts/fetch-easyrpg.sh；打包流程不依赖它）"
 fi
 
+# ---------------------------------------------------------------------------
+# Step 2.7 -- 内置 mkxp-z（RPG Maker XP/VX/VX Ace，Scripts/fetch-mkxpz.sh 的产物）
+#
+# 与 Step 2.6 完全同构：**可选**，缺失时 XP/VX/VX Ace 点了启动报 runtime_missing。
+# 许可: mkxp-z 是 GPL-2.0-or-later。这里分发的是**带本地补丁的构建**（workdir_current
+#       + 三个 macOS 崩溃修复），对应补丁随仓库提供：vendor/mkxpz/。
+#
+# 一个额外约束（不是美化）: 这个二进制必须用 -Dworkdir_current=true 构建 ——
+#       否则 mkxp-z 会把 cwd 改成可执行文件目录，游戏目录永远挂不上。
+#       fetch-mkxpz.sh 已经核过一次，这里的 cp 只是搬运。
+# ---------------------------------------------------------------------------
+MKXPZ_SRC="$ROOT/vendor/runtime/mkxp-z"
+MKXPZ_DST="$APP/Contents/Resources/runtime"
+if [ -x "$MKXPZ_SRC" ]; then
+  echo "==> bundle mkxp-z runtime ($(du -h "$MKXPZ_SRC" | cut -f1))"
+  mkdir -p "$MKXPZ_DST"
+  cp "$MKXPZ_SRC" "$MKXPZ_DST/mkxp-z"
+  chmod +x "$MKXPZ_DST/mkxp-z"
+  codesign -s - --force --identifier org.mkxp-z.runtime "$MKXPZ_DST/mkxp-z" 2>/dev/null \
+    || echo "warn: mkxp-z ad-hoc sign failed (artifact is still runnable locally)"
+  echo "==> runtime: $MKXPZ_DST/mkxp-z"
+else
+  echo "==> runtime: vendor/runtime/mkxp-z 不存在 —— RPG Maker XP/VX/VX Ace 不可启动"
+  echo "          （需要时跑: bash Scripts/fetch-mkxpz.sh；打包流程不依赖它）"
+fi
+
 echo "==> ad-hoc sign"
 if codesign -s - --force --deep "$APP" 2>/dev/null; then
   echo "==> signed (ad-hoc)"

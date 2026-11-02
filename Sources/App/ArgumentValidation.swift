@@ -188,9 +188,10 @@ enum ArgumentValidation {
   --close-after <秒>       启动成功 N 秒后模拟用户关窗
 
 --play-native
-  --play-native <游戏目录>  用内置 EasyRPG 运行时启动（仅 RPG Maker 2000/2003）
+  --play-native <游戏目录>  用内置原生运行时启动（EasyRPG / mkxp-z）
+                          支持 RPG Maker 2000/2003、XP、VX、VX Ace
   --duration <秒>          运行时长（默认 6；到点 SIGTERM→SIGKILL）
-  成功输出 `play: backend=easyrpg pid=<n>`；不打印 `play: http=`，也不 attach。
+  成功输出 `play: backend=<easyrpg|mkxpz> pid=<n>`；不打印 `play: http=`，也不 attach。
 
 --kernel-smoke
   --kernel-smoke <游戏目录>  在最小内核上验证自动播放与注入

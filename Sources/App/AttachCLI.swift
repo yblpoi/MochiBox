@@ -898,7 +898,7 @@ enum AttachCLI {
     ///
     /// 因此它**不复用** `--play` 的 attach / drain 链路，也不打印 `play: http=`
     /// （那一行是 kernel/faults 层的硬契约，正则带行尾 `$`，多一个字段就解析失败）。
-    /// 成功时只新增一行 `play: backend=easyrpg pid=<n>`，进程跑满 `--duration` 后
+    /// 成功时只新增一行 `play: backend=<easyrpg|mkxpz> pid=<n>`，进程跑满 `--duration` 后
     /// 走与 `--play` 相同的 SIGTERM→SIGKILL 收敛。
     static func runPlayNative(_ options: Options) async -> Int32 {
         guard let directoryArgument = options.playNative, !directoryArgument.isEmpty else { return 2 }
@@ -914,11 +914,12 @@ enum AttachCLI {
         do {
             // 引擎门：`--play-native` 只服务有原生运行时的引擎。用 `launchBackend` 判定
             // （不是按引擎名硬编码），新增原生后端时这里自动放行。
-            guard detection.engine.launchBackend == .easyrpg else {
+            // 只放行原生运行时后端（EasyRPG / mkxp-z）；nwjs 与 nil 都不归这条路径。
+            guard let backend = detection.engine.launchBackend, backend != .nwjsWeb else {
                 throw MochiBoxError(
                     code: .launcherNoExecutable,
                     message: "引擎 \(detection.engine.displayName)（\(detection.engine.rawValue)）"
-                        + "没有原生运行时后端（--play-native 只支持 RPG Maker 2000/2003）"
+                        + "没有原生运行时后端（--play-native 只支持 RPG Maker 2000/2003、XP、VX、VX Ace）"
                 )
             }
 
@@ -933,7 +934,8 @@ enum AttachCLI {
             )
             let handle = try await launcher.launch(entry: entry, gameRoot: gameRoot, log: nil)
             // **新增行**，不改 `play: http=`；`pid` 是后续 `pgrep` / 取证脚本的唯一凭据。
-            Self.printFlush("play: backend=easyrpg pid=\(handle.pid)")
+            // backend 取后端枚举的 rawValue（easyrpg / mkxpz），不是引擎名。
+            Self.printFlush("play: backend=\(backend.rawValue) pid=\(handle.pid)")
 
             // 与 `--play` 一致：跑满 `--duration` 再 terminate（SIGTERM → 3s → SIGKILL）；
             // 进程自己先退出就提前收敛，不白等。

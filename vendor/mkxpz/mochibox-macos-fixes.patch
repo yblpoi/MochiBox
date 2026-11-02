@@ -1,0 +1,99 @@
+diff --git a/src/display/font.cpp b/src/display/font.cpp
+index 69a623e..9e199df 100644
+--- a/src/display/font.cpp
++++ b/src/display/font.cpp
+@@ -46,18 +46,9 @@
+ #include FT_TRUETYPE_TABLES_H
+ #include FT_TRUETYPE_IDS_H
+ 
+-#ifndef MKXPZ_CJK_FONT
+-#include "liberation.ttf.xxd"
+-#else
+ #include "wqymicrohei.ttf.xxd"
+-#endif
+-
+ 
+-#ifndef MKXPZ_CJK_FONT
+-#define BUNDLED_FONT liberation
+-#else
+ #define BUNDLED_FONT wqymicrohei
+-#endif
+ 
+ #define BUNDLED_FONT_D(f) mkxp_assets_## f ##_ttf
+ #define BUNDLED_FONT_L(f) mkxp_assets_## f ##_ttf_len
+diff --git a/src/filesystem/filesystem.cpp b/src/filesystem/filesystem.cpp
+index 67c9be0..1367c35 100644
+--- a/src/filesystem/filesystem.cpp
++++ b/src/filesystem/filesystem.cpp
+@@ -376,6 +376,13 @@ struct CacheEnumData {
+   /* Converts in-place */
+   void toNFC(char *inout) {
+ #ifdef __APPLE__
++    /* iconv_open() can fail: the bundled static libiconv has no "utf-8-mac"
++     * (that conversion is an Apple addition to the system iconv). Passing
++     * (iconv_t)-1 to iconv() dereferences 0xffffffffffffffff and crashes the
++     * whole process while the path cache is being built. */
++    if (nfd2nfc == (iconv_t)-1)
++      return;
++
+     size_t srcSize = strlen(inout);
+     size_t bufSize = sizeof(buf);
+     char *bufPtr = buf;
+@@ -384,7 +391,13 @@ struct CacheEnumData {
+     /* Reserve room for null terminator */
+     --bufSize;
+ 
+-    iconv(nfd2nfc, &inoutPtr, &srcSize, &bufPtr, &bufSize);
++    size_t res = iconv(nfd2nfc, &inoutPtr, &srcSize, &bufPtr, &bufSize);
++    if (res == (size_t)-1) {
++      /* Conversion failed (or the buffer was too small to hold the
++       * result). Keep the original name rather than a truncated one. */
++      return;
++    }
++
+     /* Null-terminate */
+     *bufPtr = 0;
+     strcpy(inout, buf);
+@@ -415,7 +428,9 @@ static PHYSFS_EnumerateCallbackResult cacheEnumCB(void *d, const char *origdir,
+   strTolower(lowerCase);
+ 
+   PHYSFS_Stat stat;
+-  PHYSFS_stat(fullPath, &stat);
++  memset(&stat, 0, sizeof(stat));
++  if (!PHYSFS_stat(fullPath, &stat))
++    return PHYSFS_ENUM_ERROR;
+ 
+   if (stat.filetype == PHYSFS_FILETYPE_DIRECTORY) {
+     /* Create a new list for this directory */
+diff --git a/src/filesystem/filesystemImplApple.mm b/src/filesystem/filesystemImplApple.mm
+index 5ec628a..cb337ef 100644
+--- a/src/filesystem/filesystemImplApple.mm
++++ b/src/filesystem/filesystemImplApple.mm
+@@ -49,10 +49,24 @@
+ 
+ std::string filesystemImpl::normalizePath(const char *path, bool preferred, bool absolute) {
+     @autoreleasepool {
+-        NSString *nspath = [NSURL fileURLWithPath: PATHTONS(path)].URLByStandardizingPath.path;
+-        NSString *pwd = [NSString stringWithFormat:@"%@/", NSFileManager.defaultManager.currentDirectoryPath];
++        NSString *raw = PATHTONS(path);
++        NSString *nspath = [NSURL fileURLWithPath:raw].URLByStandardizingPath.path;
+         if (!absolute) {
+-            nspath = [nspath stringByReplacingOccurrencesOfString:pwd withString:@""];
++            /* Strip the working directory prefix. The raw currentDirectoryPath
++             * and the standardized path can disagree (e.g. /tmp is a symlink
++             * to /private/tmp), so try both forms and fall back to the
++             * caller's own relative path if neither matches. PhysFS resolves
++             * relative paths against its mount points and rejects absolute
++             * ones, so leaving a prefix behind breaks every lookup. */
++            NSString *pwd = [NSString stringWithFormat:@"%@/", NSFileManager.defaultManager.currentDirectoryPath];
++            NSString *pwdStd = [NSString stringWithFormat:@"%@/", [NSURL fileURLWithPath:NSFileManager.defaultManager.currentDirectoryPath].URLByStandardizingPath.path];
++
++            if ([nspath hasPrefix:pwd])
++                nspath = [nspath substringFromIndex:pwd.length];
++            else if ([nspath hasPrefix:pwdStd])
++                nspath = [nspath substringFromIndex:pwdStd.length];
++            else
++                nspath = raw;
+         }
+         nspath = [nspath stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
+         return std::string(NSTOPATH(nspath));

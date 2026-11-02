@@ -477,6 +477,124 @@ extension SelfTestRunner {
                     try expect(error.message.contains("chmod +x"), "文案应给出修复命令")
                 }
             },
+            SelfTestCase(group: "F", name: "mkxpz_runtime_executable") { context in
+                // 与 easyrpg 同一条三段式查找，但引擎必须**原样透传**：
+                // 早期写法把返回的 engine 固定成 .rgss3，VX 会因此被标成 VX Ace。
+                let root = try directory(context, "f_mkxpz_runtime")
+                let executable = root.appendingPathComponent("vendor/runtime/mkxp-z")
+                try touch(root, "vendor/runtime/mkxp-z", contents: "#!/bin/sh\nexit 0\n")
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755], ofItemAtPath: executable.path
+                )
+
+                let strategy = try GameLauncher.resolveMKXPZStrategy(
+                    gameRoot: root, engine: .rgss2, runtimeCandidates: [executable]
+                )
+                switch strategy {
+                case .nativeRuntime(let url, let engine):
+                    try expectEqual(url.standardizedFileURL.path,
+                                    executable.standardizedFileURL.path, "运行时路径")
+                    try expectEqual(engine, .rgss2, "引擎必须原样透传")
+                case .nwjsApp(_, _), .webBrowser(_, _):
+                    throw SelfTestFailure(message: "有可执行运行时必须返回 nativeRuntime")
+                }
+            },
+            SelfTestCase(group: "F", name: "mkxpz_runtime_missing") { context in
+                let root = try directory(context, "f_mkxpz_missing")
+                let absent = root.appendingPathComponent("vendor/runtime/mkxp-z")
+                do {
+                    _ = try GameLauncher.resolveMKXPZStrategy(
+                        gameRoot: root, engine: .rgss1, runtimeCandidates: [absent]
+                    )
+                    throw SelfTestFailure(message: "缺失时必须抛 runtime_missing")
+                } catch let error as MochiBoxError {
+                    try expectEqual(error.code, .runtimeMissing, "错误码")
+                    try expect(error.message.contains("runtime_missing"), "文案应带 detail 码")
+                    try expect(error.message.contains("fetch-mkxpz.sh"), "文案应给出修复命令")
+                }
+            },
+            SelfTestCase(group: "F", name: "mkxpz_game_ini_library") { context in
+                // 真实工程里的 DLL 名：XP 用 RGSS1xx、VX 用 RGSS2xx、VX Ace 用 RGSS3xx。
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "RGSS104E.dll"), .rgss1, "XP 1.04")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "RGSS103J.dll"), .rgss1, "XP 1.03 日文版")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "RGSS200E.dll"), .rgss2, "VX 2.00")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "RGSS202E.dll"), .rgss2, "VX 2.02")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "RGSS300.dll"), .rgss3, "VX Ace 3.00")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "RGSS301.dll"), .rgss3, "VX Ace 3.01")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: " rgss202e.dll "), .rgss2,
+                               "大小写/空白不该影响判定")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "RGSS102.dll.bak"), .rgss1,
+                               "前缀匹配（改名副本也算）")
+                try expectEqual(GameLauncher.mkxpzEngine(forLibrary: "System.dll"), nil, "未知 DLL 不猜")
+            },
+            SelfTestCase(group: "F", name: "mkxpz_game_ini_mismatch") { context in
+                // 目录特征说是 VX，Game.ini 说是 VX Ace：必须抛 runtime_version_mismatch，
+                // 而不是把进程拉起来留一块黑屏。
+                let root = try directory(context, "f_mkxpz_mismatch")
+                try touch(root, "Game.ini", contents: "[Game]\nRTP=Standard\nLibrary=RGSS300.dll\n")
+
+                do {
+                    try GameLauncher.validateMKXPZGameIni(gameRoot: root, engine: .rgss2)
+                    throw SelfTestFailure(message: "Library 与引擎不一致时必须抛错")
+                } catch let error as MochiBoxError {
+                    try expectEqual(error.code, .runtimeVersionMismatch, "错误码")
+                    try expect(error.message.contains("RGSS300.dll"), "文案应带 Library 原值")
+                    try expect(error.message.contains("runtime_version_mismatch"), "文案应带 detail 码")
+                }
+
+                // 一致时不得抛（同一份 Game.ini + VX Ace）。
+                try GameLauncher.validateMKXPZGameIni(gameRoot: root, engine: .rgss3)
+
+                // Library 认不出来（不是 RGSS 家族）：同样按版本错配处理。
+                let odd = try directory(context, "f_mkxpz_oddlib")
+                try touch(odd, "Game.ini", contents: "[Game]\nLibrary=WolfRPG.dll\n")
+                do {
+                    try GameLauncher.validateMKXPZGameIni(gameRoot: odd, engine: .rgss1)
+                    throw SelfTestFailure(message: "未知 Library 必须抛错")
+                } catch let error as MochiBoxError {
+                    try expectEqual(error.code, .runtimeVersionMismatch, "未知 Library 的错误码")
+                }
+            },
+            SelfTestCase(group: "F", name: "mkxpz_game_ini_missing") { context in
+                // 没有 Game.ini 时 mkxp-z 读不到 Scripts/Scripts —— 必须在这里挡住。
+                let root = try directory(context, "f_mkxpz_noini")
+                do {
+                    try GameLauncher.validateMKXPZGameIni(gameRoot: root, engine: .rgss1)
+                    throw SelfTestFailure(message: "缺 Game.ini 时必须抛 game_ini_missing")
+                } catch let error as MochiBoxError {
+                    try expectEqual(error.code, .gameIniMissing, "错误码")
+                    try expect(error.message.contains("Game.ini"), "文案应点名 Game.ini")
+                }
+
+                // 有文件但没有 Library= 行：同一个码（用户要修的是同一个东西）。
+                let empty = try directory(context, "f_mkxpz_nolib")
+                try touch(empty, "Game.ini", contents: "[Game]\nRTP=Standard\n")
+                do {
+                    try GameLauncher.validateMKXPZGameIni(gameRoot: empty, engine: .rgss3)
+                    throw SelfTestFailure(message: "没有 Library= 行时必须抛错")
+                } catch let error as MochiBoxError {
+                    try expectEqual(error.code, .gameIniMissing, "缺 Library 行的错误码")
+                }
+
+                // UTF-16LE + BOM（RM 编辑器在部分系统上就这么写）：仍要能读出 Library。
+                let utf16 = try directory(context, "f_mkxpz_utf16")
+                let iniURL = utf16.appendingPathComponent("Game.ini")
+                let units = Array("[Game]\r\nLibrary=RGSS202E.dll\r\n".utf16)
+                var bytes = Data([0xFF, 0xFE])   // BOM
+                bytes.append(contentsOf: units.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+                try bytes.write(to: iniURL)
+                try expectEqual(GameLauncher.mkxpzEngine(
+                    forLibrary: try GameLauncher.mkxpzGameIniLibrary(gameRoot: utf16)
+                ), .rgss2, "UTF-16LE 的 Game.ini")
+            },
+            SelfTestCase(group: "F", name: "rgss_launch_backend") { context in
+                // 三代都必须有后端（此前是 nil：库里显示"暂不支持"，点了也没反应）。
+                for engine in [EngineKind.rgss1, .rgss2, .rgss3] {
+                    try expectEqual(engine.launchBackend, .mkxpz, "\(engine.rawValue) 的启动后端")
+                }
+                // 没接后端的引擎仍是 nil —— 不许被这条改动顺手放行。
+                try expectEqual(EngineKind.kirikiri.launchBackend, nil, "kirikiri 仍无后端")
+            },
             SelfTestCase(group: "F", name: "legacy_library_support_display") { context in
                 // 旧版本 App 写出的库：easyrpg 条目仍是 "p2"（当时没有内置运行时）。
                 // 新代码不迁移、不写新枚举值：展示时按 launchBackend 派生，旧 App 仍能读回。

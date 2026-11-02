@@ -283,6 +283,8 @@ final class SessionController: ObservableObject {
             adapter = MVAdapter(engine: entry.engine, log: log)
         case .easyrpg:
             adapter = EasyRPGAdapter(engine: entry.engine, log: log)
+        case .mkxpz:
+            adapter = MKXPZAdapter(engine: entry.engine, log: log)
         case .none:
             fail(MochiBoxError(
                 code: .launcherNoExecutable,

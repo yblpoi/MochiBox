@@ -289,13 +289,17 @@ struct QAProbe {
         // ---- V6-26..29 launchBackend：可启动性由后端决定，不由 supportLevel 决定 ----
         // 26 easyrpg 有运行时后端 → 可启动（声明级别只有 p2，正说明两者解耦）
         expectLaunchable("V6-26", root.appendingPathComponent("e_easyrpg"), .easyrpg, true)
-        // 27 rgss3 运行时未就绪（mkxp-z SIGSEGV）→ 不可启动
-        expectLaunchable("V6-27", root.appendingPathComponent("e_rgss3"), .rgss3, false)
+        // 27 rgss3 有内置 mkxp-z 运行时 → 可启动（'运行时没打包就没后端' 的旧断言已随
+        //    Scripts/fetch-mkxpz.sh + build.sh Step 2.7 一起作废）
+        expectLaunchable("V6-27", root.appendingPathComponent("e_rgss3"), .rgss3, true)
         // 28 tyrano 声明 p0，但没有启动后端 → 不可启动
         expectLaunchable("V6-28", root.appendingPathComponent("e_tyrano"), .tyrano, false)
-        // 29 表穷举：3 个有后端 + 11 个 nil，必须覆盖 EngineKind 全部 case（新增引擎时此条会红）
-        let backed: [(EngineKind, LaunchBackend)] = [(.mv, .nwjsWeb), (.mz, .nwjsWeb), (.easyrpg, .easyrpg)]
-        let backendless: [EngineKind] = [.renpy, .kirikiri, .rgss3, .rgss2, .rgss1, .tyrano, .wolf, .unity, .godot, .siglus, .unknown]
+        // 29 表穷举：6 个有后端 + 8 个 nil，必须覆盖 EngineKind 全部 case（新增引擎时此条会红）
+        let backed: [(EngineKind, LaunchBackend)] = [
+            (.mv, .nwjsWeb), (.mz, .nwjsWeb), (.easyrpg, .easyrpg),
+            (.rgss1, .mkxpz), (.rgss2, .mkxpz), (.rgss3, .mkxpz)
+        ]
+        let backendless: [EngineKind] = [.renpy, .kirikiri, .tyrano, .wolf, .unity, .godot, .siglus, .unknown]
         var wrong: [String] = []
         for (kind, want) in backed where kind.launchBackend != want {
             wrong.append("backed \(kind.rawValue) want=\(want.rawValue) got=\(kind.launchBackend?.rawValue ?? "nil")")
@@ -311,9 +315,8 @@ struct QAProbe {
 
         // ---- V6-30..33 真实 fixture 的四版本映射 ----
         // 依据 docs/rpgmaker-runtime-verification.md：仓里四个 fixture 各自认成哪个引擎、
-        // 声明级别是什么。rgss1/2/3 的 launchBackend 仍是 nil —— mkxp-z 已实测能跑
-        // （XP / VX / VX Ace 都有游戏画面证据），但二进制还没打包进 .app；
-        // 这里钉住"没打包就没后端"，接 mkxpz 时这四条会红，提醒同步文档与 V6-29 的穷举表。
+        // 声明级别是什么。rgss1/2/3 走内置 mkxp-z（`Scripts/fetch-mkxpz.sh` 产出、
+        // build.sh Step 2.7 打包），四条的 backend 因此是 easyrpg / mkxpz / mkxpz / mkxpz。
         if let repoRoot = Self.argument("--root") {
             let fixtures: [(String, String, EngineKind)] = [
                 ("V6-30", "rm2000", .easyrpg),

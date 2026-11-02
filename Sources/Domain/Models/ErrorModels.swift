@@ -73,6 +73,13 @@ enum ErrorCode: String, Codable, Sendable {
     case runtimeMissing = "runtime_missing"
     /// 找到了运行时文件但没有执行位（`chmod +x` 就能好），或 exec 直接失败（架构不匹配）。
     case runtimeNotExecutable = "runtime_not_executable"
+    /// 游戏目录里没有 Game.ini（mkxp-z 靠它拿 Library/Scripts/Title；缺了就只会黑屏）。
+    case gameIniMissing = "game_ini_missing"
+    /// Game.ini 的 Library= 与目录里检测到的引擎不一致（XP/VX/VX Ace 之间错配）。
+    ///
+    /// 与 runtimeNotExecutable 的区别：那个是**分发包**的问题，这个是**这一款游戏**
+    /// 的数据与识别结果对不上 —— 换个目录可能就好，重装运行时不会。
+    case runtimeVersionMismatch = "runtime_version_mismatch"
     /// 参数非法（Host 与 Agent 都会抛：缺字段、类型不对、枚举不认识）。
     case cheatBadArgs = "cheat_bad_args"
     /// 路径/写入目标被安全边界拒绝（`cheat.setObjectPath`）。
@@ -118,6 +125,10 @@ enum ErrorCode: String, Codable, Sendable {
             return (false, "找不到内置游戏运行时（分发包可能不完整）")
         case .runtimeNotExecutable:
             return (false, "内置游戏运行时不可执行（文件损坏或缺少执行权限）")
+        case .gameIniMissing:
+            return (false, "游戏目录里没有 Game.ini，无法确定 RGSS 版本")
+        case .runtimeVersionMismatch:
+            return (false, "Game.ini 的 Library 与检测到的引擎不一致")
         case .cdpTimeout:
             return (false, "等待调试端口超时")
         case .agentNoHello:
