@@ -24,7 +24,9 @@ Release 的现成二进制，而是按下面的参数现场编的。改动理由
 
 只装 Command Line Tools 就能完成构建（不需要 Xcode），**唯一代价是设置菜单**，见下文。
 
-## 构建
+## 标准构建
+
+下面这组参数是唯一受支持的构建方式，记为「标准构建参数组」。
 
 ```sh
 meson setup builddir . \
@@ -55,7 +57,7 @@ ninja -C builddir
 
 ## 构建后处理：strip + ad-hoc 重签
 
-上游产物带 **137,139 个符号**，`__LINKEDIT` 占 8,324,496 B（其中 `LC_SYMTAB` 6,777,728 B），
+上游产物带 **137,139 个符号**，`__LINKEDIT` 占 8,339,456 B（其中 `LC_SYMTAB` 6,777,728 B），
 是分发体积里最大的一块非代码数据。构建后必须先 strip 再签名：
 
 ```sh
@@ -63,11 +65,11 @@ strip builddir/mkxp-z.aarch64          # 无参数 = 删掉 dyld 不需要的全
 codesign -s - --force --identifier org.mkxp-z.runtime builddir/mkxp-z.aarch64
 ```
 
-实测（arm64，同一构建）：
+实测（arm64，同一构建；后两行的字节数含 strip 后的 ad-hoc 重签）：
 
 | 阶段 | 字节 | `__LINKEDIT` | 符号数（`nm -a`） | 备注 |
 | --- | --- | --- | --- | --- |
-| 未 strip | 42,075,536 | 8,324,496 | 137,139 | 上游 ninja 产物 |
+| 未 strip | 42,075,536 | 8,339,456 | 137,139 | 上游 ninja 产物 |
 | `strip -x -S` | 37,175,584 | 3,440,640 | 30,499 | 只去局部符号，保留全局符号名 |
 | `strip`（全量） | **35,448,032** | 1,703,936 | 1,929 | 等价 Xcode 的 Strip Style = All Symbols |
 
@@ -78,6 +80,18 @@ codesign -s - --force --identifier org.mkxp-z.runtime builddir/mkxp-z.aarch64
 - **不要用 upx**：macOS 上会破坏代码签名，且被杀软误报。
 - stderr 里的 `strip: warning: changes being made to the file will invalidate the code signature`
   是预期的，不是失败。
+
+复算方法（仓库根执行；把路径换成 `builddir/mkxp-z.aarch64` 即得上表「未 strip」一行）：
+
+```sh
+nm -a vendor/runtime/mkxp-z 2>/dev/null | wc -l    # 1929
+size -m vendor/runtime/mkxp-z | grep __LINKEDIT    # Segment __LINKEDIT: 1703936
+stat -f%z vendor/runtime/mkxp-z                    # 35448032
+```
+
+对未 strip 的产物，同样三条命令得到 `137139` / `Segment __LINKEDIT: 8339456` / `42075536`。
+`size` 的 `-m` 不能省：只给 `-l` 时会打印 `__TEXT/__DATA/__OBJC/others` 汇总表，不列段名
+（`-l` 只是 `-m` 的修饰符）；需要交叉核对时用 `size -m -l …` 会额外给出 fileoff。
 
 ## 设置菜单为什么不可用（假 `ibtool` 桩）
 
@@ -101,8 +115,13 @@ done
 exit 0
 EOF
 chmod +x /tmp/fakebin/ibtool
-PATH=/tmp/fakebin:$PATH meson setup builddir .
+PATH=/tmp/fakebin:$PATH meson setup builddir . \
+  ‹上面「标准构建」一节的完整 -D* 参数组，必须原样带上›
 ```
+
+**别只写 `meson setup builddir .`。** 漏掉 `-Dworkdir_current=true` 会让产物把 cwd 改回
+可执行文件所在目录，挂载根错位，启动即看不到游戏数据；`Scripts/fetch-mkxpz.sh` 的
+`check_workdir_current()` 会拦下这种产物。
 
 后果：`macos/views/SettingsMenuController.mm:96-100` 用
 `[[NSNib alloc] initWithNibData:...]` 加载这 8 个字节，返回 nil 后抛
