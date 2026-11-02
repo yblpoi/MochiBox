@@ -10,8 +10,10 @@
  *     M-L1-<ver>-EMPTY   事件层如实为 0（@events{} 空、无 101/401）—— 不假装有对话
  *     M-L1-<ver>-DB      数据库层精确条数（XP 620 / VX 769，角色名 8 个非空）
  *     M-L1-GAMEINI       OpenXP 的 Library=RGSS104E.dll，子串命中 EngineDetector 的 Library=RGSS1
- *     M-L1-VXA-*         VX Ace 真实样本：Terms 是 4 个容器、事件层非空（236 条）、
- *                        RGSS3 浮点尾随字节原样保留、Game.ini 的 Library=RGSS3 needle 不命中
+ *     M-L1-VXA-*         VX Ace 真实样本：27 个文件逐个可解析、往返字节完全相同、
+ *                        文本 1463 条（门槛 > 50）、Terms 是 4 个容器且能取到值、
+ *                        事件层非空（236 条）、RGSS3 浮点尾随字节原样保留、
+ *                        Game.ini 的 Library=RGSS3 needle 不命中
  *                        （真实工程写 Library=System\RGSS301.dll，检测靠 Data/*.rvdata2）
  *
  *   Level-2 合成样本（Fixtures/rmxp|rmvx|rmvxace）

@@ -2,8 +2,9 @@
 
 **日期**：2026-11-02
 **机器**：Apple Silicon（arm64；GL Renderer 报 `Apple A18 Pro`），macOS 27.2（26B123）
-**测试口径**：合成 fixture + 本地素材（占位 PNG），不含任何版权文件。运行时二进制、
-Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不入库、不进 `.app`。
+**测试口径**：合成 fixture + 第三方开源工程的真实数据表 + 本地占位素材（占位 PNG），
+不含任何版权媒体素材。运行时二进制、Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，
+不入库、不进 `.app`；`Fixtures/*-real/` 里的数据表逐目录带 `PROVENANCE.md` 与许可证全文。
 
 ## 汇总表
 
@@ -194,6 +195,13 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
 | 默认脚本是否被动过 | 没有。`VX_SP2` 是 Enterbrain 官方补丁段（`eb_sp1_`/`eb_sp2_` 前缀、日文官方注释） | 没有。剔除的 3 段都在默认清单之外；剔除后无类重开 |
 | 额外内容 | 无 | 无（`QuestSystem` 与两段 Neon Black 补丁已剔除） |
 | 能不能说"默认脚本兼容" | **能**，限定为"VX 默认脚本集（含官方 VX_SP2 补丁）" | **能**，限定为"VX Ace 默认脚本集（110 段默认脚本），剔除第三方后零改动跑通" |
+| 数据层真实样本（`Data/*`） | `Fixtures/rmvx-real/`：14 个 `.rvdata`（MIT 或 Apache-2.0），往返字节相同 | `Fixtures/rmvxace-real/`：27 个 `.rvdata2` + `Game.ini`/`Game.rvproj2`（CC0-1.0，470,061 B），往返字节相同、1463 条文本 |
+
+**VX Ace 数据层不再是"无真实样本"**（2026-11-02 入库）：`Fixtures/rmvxace-real/` 是
+`caynine9/Jimicization-Project` @ `70b397b` 的原样数据表，许可 CC0-1.0 覆盖整个仓库
+（含 `Data`，无独立 NOTICE），证据见该目录 `PROVENANCE.md`。`19_marshal` 的
+`M-L1-VXA-PARSE/RT/TEXT/ENC/STRUCT` 分别钉住：27 个文件逐个可解析、序列化回去字节完全相同、
+1463 条文本（门槛 > 50）、编码全判 UTF-8、`@terms` 的 4 个容器能取到值。
 
 为什么不下"逐字节等于 Enterbrain 官方文件"的结论：这台机器上没有装 RPG Maker，
 拿不到官方安装目录里的那份 `Scripts.*` 做 byte-diff。上面的结论来自**结构审计**
@@ -237,6 +245,11 @@ Enterbrain 默认脚本、第三方脚本集**全部只在临时目录**，不�
    不通行时先怀疑这里，不要先怀疑引擎。
 
 ## 已知缺口
+
+**2026-11-02 已闭环**：VX Ace 的**数据层**不再是"无真实样本"——上面的
+`Fixtures/rmvxace-real/` 就是 CC0-1.0 的真实工程数据（27 个 `Data/*.rvdata2`，
+逐文件 sha256 与许可证据见 `PROVENANCE.md`）。**仍然缺的是默认脚本的字节级副本**
+（下面第 1、2 条），不是数据层。
 
 1. **没有官方默认脚本的字节级副本**：本机未安装 RPG Maker，无法做
    "解出来的段 == 安装目录里的段"的 byte-diff。VX/VX Ace 的"未改动"是结构审计结论。

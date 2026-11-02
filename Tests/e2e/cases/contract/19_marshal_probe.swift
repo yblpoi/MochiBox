@@ -8,8 +8,9 @@
 //               RPG::Map / Table 结构、@words/@terms 形状、往返字节相同、数据库层精确条数。
 //              这两份工程不含 101/401 对话：@events{} 是空哈希、EventCommand 只有 code=0
 //              终止符 —— 所以对话断言放在 Level-2 与 M-L1-VXA。
-//     M-L1-VXA-*  第三份真实样本是 CC0 的 VX Ace 工程，事件层**非空**：236 条
-//              对话/指令文本、Terms 是 4 个容器、浮点带 RGSS3 尾随字节。
+//     M-L1-VXA-*  第三份真实样本是 CC0 的 VX Ace 工程：27 个文件逐个可解析、
+//              往返字节完全相同、文本 1463 条（门槛 > 50）、Terms 是 4 个容器
+//              且能取到值（basic[0]="Level"）、事件层非空（236 条）、浮点带 RGSS3 尾随字节。
 //
 //   Level-2 合成样本（Fixtures/rmxp|rmvx|rmvxace）—— 证文本路径与编码/边界
 //     M-L2-*   101/401/102/402/404/405 路径与文本、三版本各不相同的用语表形状、
@@ -297,6 +298,7 @@ struct MarshalProbe {
             .filter { $0.hasSuffix(".rvdata2") }.sorted() ?? []
 
         var headerProblems: [String] = []
+        var parseProblems: [String] = []
         var roundTripProblems: [String] = []
         var totalEntries = 0
         var eventEntries = 0
@@ -325,7 +327,7 @@ struct MarshalProbe {
                     $0.declared != .flag(true) && !$0.raw.allSatisfy { $0 < 0x80 }
                 }.count
             } catch {
-                roundTripProblems.append("\(name): \(error)")
+                parseProblems.append("\(name): \(error)")
             }
         }
 
@@ -334,9 +336,14 @@ struct MarshalProbe {
                 names.count == 27 && headerProblems.isEmpty,
                 "文件数 \(names.count)（期望 27）\n" + headerProblems.joined(separator: "\n"))
 
+        r.check("M-L1-VXA-PARSE",
+                "VXA 的 \(names.count) 个真实数据文件每一个都能解析",
+                names.count == 27 && parseProblems.isEmpty,
+                parseProblems.joined(separator: "\n"))
+
         r.check("M-L1-VXA-RT",
-                "VXA 的 \(names.count) 个真实数据文件全部解析且往返字节完全相同",
-                !names.isEmpty && roundTripProblems.isEmpty,
+                "VXA 的 \(names.count) 个真实数据文件解析后序列化回去，字节完全相同",
+                !names.isEmpty && parseProblems.isEmpty && roundTripProblems.isEmpty,
                 roundTripProblems.joined(separator: "\n"))
 
         // 结构：System 的用语表是**容器形态**（4 个数组），不是 VX 的 33 个扁平字符串
@@ -346,18 +353,26 @@ struct MarshalProbe {
             let className = system.root.className ?? "-"
             let terms = system.root.ivar(named: "terms")?.record
             var counts: [String: Int] = [:]
+            var firstTexts: [String: String] = [:]
             for ivar in terms?.ivars ?? [] {
                 let key = ivar.name.name.hasPrefix("@")
                     ? String(ivar.name.name.dropFirst()) : ivar.name.name
                 counts[key] = ivar.value.arrayElements?.count
                     ?? ivar.value.hashPairs?.count ?? -1
+                if let first = ivar.value.arrayElements?.first?.stringValue {
+                    firstTexts[key] = String(decoding: first.bytes, as: UTF8.self)
+                }
             }
             let expected = ["basic": 8, "params": 8, "etypes": 5, "commands": 24]
+            let expectedFirst = ["basic": "Level", "params": "MaxHP",
+                                 "etypes": "Senjata", "commands": "Lawan"]
             termsOK = className == "RPG::System"
                 && terms?.className.name == "RPG::System::Terms"
                 && counts == expected
+                && firstTexts == expectedFirst
             structureDetail.append("System 类=\(className) 用语表=\(terms?.className.name ?? "-") "
-                + "容器=\(counts.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ","))")
+                + "容器=\(counts.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",")) "
+                + "首值=\(firstTexts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ","))")
         } else {
             structureDetail.append("读不到 System.rvdata2")
         }
@@ -394,6 +409,12 @@ struct MarshalProbe {
                 "VXA 真实样本事件层非空：\(eventEntries) 条对话/指令文本，Map001 有 1 个事件",
                 eventOK,
                 eventDetail.joined(separator: "\n"))
+
+        // 文本提取门槛：每个文件的文本都要能被提出来，全工程条数 > 50
+        r.check("M-L1-VXA-TEXT",
+                "VXA 真实样本能提取 \(totalEntries) 条文本（门槛 > 50），其中事件指令 \(eventEntries) 条",
+                totalEntries > 50 && eventEntries > 0,
+                "总条目 \(totalEntries)，事件指令 \(eventEntries)")
 
         // 数据库层：全工程 1463 条，10 个角色名非空
         let actorEntries = documentInRepo("\(base)/Actors.rvdata2")?.textEntries() ?? []

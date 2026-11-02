@@ -4,17 +4,40 @@
 只用于验证 Marshal 4.8 解析/写回在真实 Ace 数据上的行为，并补上"VX Ace 没有真实样本"的缺口。
 
 - 来源仓库：https://github.com/caynine9/Jimicization-Project
-- 提交：70b397b9339bc4b1e19483621ef4ac1d57e81b5f
+- 快照 commit：`70b397b9339bc4b1e19483621ef4ac1d57e81b5f`（`main` 分支 HEAD，2023-03-16）
+- 抓取日期：**2026-11-02**
+- 抓取方式：`git clone --filter=blob:none --sparse --depth 1` 后
+  `git sparse-checkout set PJSRH/Data`，再与仓库根 `LICENSE` 一起取回。
 - 路径：`PJSRH/Data/*.rvdata2`、`PJSRH/Game.ini`、`PJSRH/Game.rvproj2`
 - 许可：**CC0 1.0 Universal**（仓库根 `LICENSE`，全文见同目录 `LICENSE-CC0.txt`）。
-  CC0 是著作权弃权声明，覆盖整个仓库（含 `Data` 下的数据文件），无"只覆盖代码"的问题。
-- 工程来源：作者自建的 VX Ace 1.02 工程（`Game.rvproj2` 内容为 `RPGVXAce 1.02`），
-  **不是** Enterbrain 官方 Sample Game，也不含 RTP 素材（本目录只有数据表，没有
-  Graphics / Audio / Fonts）。
+
+## 许可核实的证据（2026-11-02）
+
+1. 仓库根只有一份 `LICENSE`，内容为 CC0 1.0 Universal 全文（与本地
+   `LICENSE-CC0.txt` 逐字节 `cmp` 一致）。
+2. 默认分支 `main` 的根目录清单：`PJSRH/`、`LICENSE`、`README.md`，**没有**单独的
+   `NOTICE` / 附加条款文件。
+3. `PJSRH/Data/` 下只有 28 个数据文件，**没有**独立的 LICENSE / NOTICE / README。
+4. `README.md` 没有"许可仅覆盖代码"之类的限定；仓库页面标注的许可证也是 CC0-1.0。
+5. CC0 正文在 "Copyright and Related Rights" 里明确列出
+   "the right of extraction, dissemination, use and reuse of data in a Work" 与
+   "database rights"，即数据表本身也在弃权范围内，不存在"只覆盖代码"的问题。
+
+结论：CC0-1.0 覆盖**整个仓库**（含 `PJSRH/Data` 下的数据文件），可以入库。
+
+另有一条支持"剔除 Scripts.rvdata2"的事实：`README.md` 的 Resources 节自己列了第三方脚本
+`Basic Quest System v1.1a by Vlue`。脚本集里混有非作者代码，正是不入库的理由之一。
+
+## 工程来源
+
+作者自建的 VX Ace 1.02 工程（`Game.rvproj2` 内容为 `RPGVXAce 1.02`），
+**不是** Enterbrain 官方 Sample Game，也不含 RTP 素材（本目录只有数据表，没有
+Graphics / Audio / Fonts）。
 
 ## 收录内容
 
-`Data/` 下 27 个文件 + 根目录 2 个工程文件，共 **540 KB**：
+`Data/` 下 27 个 `.rvdata2`（469,875 B）+ 根目录 2 个工程文件（186 B），
+合计 **470,061 B（约 459 KiB）**：
 
 | 文件 | 字节 | sha256 |
 | --- | ---: | --- |
@@ -48,9 +71,12 @@
 | Game.ini | 173 | f29221f942edb5645e176680dcfcdcd0fc47e88491ddd303da3357dc143bdf70 |
 | Game.rvproj2 | 13 | 4076754b3396c079b1b1978acf564a980c5d3ef445f6a92af009e302c1d656a2 |
 
-- **未收录**：`Scripts.rvdata2`（143 KB 的 Ruby 源码压缩包，不是翻译目标；解析器另有合成样本覆盖）。
-- 也未收录 `Game.exe` / `System/RGSS301.dll` / `Graphics` / `Audio` / `Save01.rvdata2`。
-- 未做任何字节修改：原样拷入，用于"解析 -> 序列化 -> 字节完全相同"的往返验证。
+- **未收录**：`Scripts.rvdata2`（143,430 B 的 Ruby 源码压缩包，含第三方脚本；
+  不是翻译目标；上游 README 也自述引用了 Vlue 的 Quest System）。
+- 也未收录 `Game.exe` / `System/RGSS301.dll` / `Graphics` / `Audio` / `Save01.rvdata2`——
+  **本目录没有任何媒体素材**，图片与音频一个都没有。
+- **字节原样**：2026-11-02 对稀疏克隆的同一 commit 逐文件 `cmp`，上表 29 个文件全部一致；
+  未做任何字节修改。用途就是"解析 -> 序列化 -> 字节完全相同"的往返验证。
 
 ## 覆盖层级：Level-2（有真对话，但仍是测试工程）
 
@@ -63,7 +89,16 @@
 因此本目录可以同时承担 Level-1（结构 + 往返）与部分 Level-2（真实对话路径）断言。
 但**不要**拿它当"覆盖所有事件指令类型"用：它只用到 101/401 这一类。
 
-## 实测到的 RGSS3 浮点怪癖（本样本的价值之一）
+## 实测到的 RGSS3 形状与浮点怪癖（本样本的价值之一）
+
+`System.rvdata2` 的 `@terms` 是**容器形态**：`@basic`(8) / `@params`(8) /
+`@etypes`(5) / `@commands`(24) 四个数组；本样本没有 `@messages`。
+首元素实测值：`basic[0]="Level"`、`params[0]="MaxHP"`、`etypes[0]="Senjata"`、
+`commands[0]="Lawan"`。
+
+`Map001.rvdata2` 的 `RPG::Map` 有 24 个 ivar（VX 是 18，XP 是 11）：
+在 VX 的 18 个之外多 `@display_name` / `@specify_battleback` / `@battleback1_name` /
+`@battleback2_name` / `@note`，并保留 `@tileset_id`。
 
 `Armors / Classes / Enemies / States / Weapons / Skills` 里的 `Float` 不是标准 MRI 写法：
 `f` 后面声明的长度比 `%0.17g` 文本多 3 字节，正文形如

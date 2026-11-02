@@ -57,9 +57,9 @@ let data = try doc.serialize()   // 未改动 == 源文件
 | 字符串 :E | 无 | 无 | 有（:E => true） |
 | 默认编码 | CP932 | CP932 | UTF-8 |
 | 用语表类 | RPG::System::Words | RPG::System::Terms | RPG::System::Terms |
-| 用语表形状 | system.words.gold（扁平 20 个字符串 ivar） | system.terms.level_a（扁平 33 个） | system.terms.basic[0] / .params[0] / .etypes[0] / .commands["fight"] / .messages["level_up"]（数组 + 哈希） |
-| Map ivar 数 | 11（实测） | 18（实测） | 18 + @display_name（无真实样本，按 VX 推） |
-| Map @tileset_id | 有 | 无 | 无 |
+| 用语表形状 | system.words.gold（扁平 20 个字符串 ivar） | system.terms.level_a（扁平 33 个） | system.terms.basic[0] / .params[0] / .etypes[0] / .commands[0]（数组）；真实样本是 4 个数组容器、无 @messages |
+| Map ivar 数 | 11（实测） | 18（实测） | 24（实测：VX 的 18 个 + @display_name / @specify_battleback / @battleback1_name / @battleback2_name / @note） |
+| Map @tileset_id | 有 | 无 | 有（实测） |
 | Map @display_name | 无 | 无 | 有 |
 | Map 视差/滚动组 | 无 | 有（parallax_name/loop_x/loop_y/sx/sy/show、disable_dashing、scroll_type） | 同 VX |
 | @bgm / @bgs 类 | RPG::AudioFile(ivar: volume/name/pitch) | RPG::BGM / RPG::BGS(ivar: name/pitch/volume) | 同 VX |
@@ -95,8 +95,9 @@ map_infos[2].name                   MapInfos 是哈希
 
 ## 5. 已知边界与未验证清单
 
-- **VX Ace 没有真实工程样本**：只有合成样本，字段形状按 VX 推（差一个 @display_name）
-- **两个真实工程的事件层都是空壳**：@events{} 为空、EventCommand 只有 code=0。事件文本路径只由合成样本覆盖；对真实样本只断言结构与往返
+- **VX Ace 有真实工程样本**（`Fixtures/rmvxace-real/`，CC0-1.0）：27 个 `Data/*.rvdata2` 全部解析并往返字节相同；Map 是 24 个 ivar，Terms 是 4 个数组容器
+- **XP / VX 两个真实工程的事件层是空壳**：@events{} 为空、EventCommand 只有 code=0。VX Ace 那份不是空壳（236 条 101/401 文本），所以真实事件路径也有 Level-1 覆盖
+- **合成 `rmvxace/` 的 `terms.commands` 是哈希**（`commands["fight"]`），只用于覆盖哈希键路径；真实 Ace 的 `@commands` 是数组（`commands[0]`），不要照合成样本写码表
 - Scripts.* 一律不解析不提取（zlib 压缩的 Ruby 源码，不是翻译目标），只保证能跳过且往返不变
 - 真实样本里没有 Struct / UserMarshal / Regexp 的用例，这三类只有自造语料覆盖（24 个结构化样本）
 - RGSS1/2 的简体中文：CP932 表达不了。要中文就整文件按 GB18030/UTF-8 处理，不要逐字段混编码
