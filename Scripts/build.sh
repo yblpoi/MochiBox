@@ -217,7 +217,12 @@ PROBE
   if [ "$TOOLCHAIN_VIA_XCRUN" -eq 0 ] && [ -n "$SYSROOT" ]; then
     candidates="$SYSROOT"
   else
-    candidates="$(ls -d "${DEV_DIR%/}/SDKs"/MacOSX*.sdk 2>/dev/null | sort -r)"
+    # ``|| true`` 不能省：本脚本开了 pipefail，<dev>/SDKs 不存在时 ls 返回 1，
+    # 直接让赋值语句非零 → set -e 静默退出（不打印任何错误，日志停在上一行）。
+    candidates="$(ls -d "${DEV_DIR%/}/SDKs"/MacOSX*.sdk 2>/dev/null | sort -r || true)"
+    # xcode-select 指向 Xcode.app 时上面那个目录不存在（SDK 在 Platforms/MacOSX.platform 下），
+    # 退回到 xcrun --show-sdk-path。此时 Xcode 自带 SwiftUI 宏 dylib，@State 直接可编。
+    [ -n "$candidates" ] || candidates="${SYSROOT:-}"
   fi
   for sdk in $candidates; do
     [ -d "$sdk/usr/include" ] || continue

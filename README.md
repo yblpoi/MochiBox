@@ -152,7 +152,9 @@ open /path/to/MochiBox.app
 
 ## 从源码构建
 
-只依赖 **Command Line Tools**（不需要 Xcode、不需要 SwiftPM / CocoaPods，运行期零第三方依赖）：
+只依赖 **Command Line Tools**（不需要 SwiftPM / CocoaPods，运行期零第三方依赖）。
+内置 mkxp-z 的 F1 设置菜单需要完整 Xcode 的 `ibtool`；没有 Xcode 也能构建，
+只是那个菜单不可用（详见 [docs/known-limits.md#L2](docs/known-limits.md#L2)）：
 
 ```bash
 bash Scripts/build.sh

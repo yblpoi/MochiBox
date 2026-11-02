@@ -98,9 +98,74 @@
 <a id="L2"></a>
 ## L2 mkxp-z 设置菜单（F1 Keybindings）
 
-**状态**：已关闭 —— 生成 `settingsmenu.nib` 需要的两条管理员命令在本机无法执行
+**状态**：**已解决（2026-11-02）** —— 许可证与首启组件就位后，用真 `ibtool` 重建，F1 设置菜单实测可用
 
-### 依据（2026-11-02 复核，命令 + 退出码）
+### 结论（2026-11-02 实测）
+
+用户在本机执行了两条管理员命令（顺序不能反）：
+
+```bash
+sudo xcodebuild -license accept      # 1) 先接受 Xcode 许可证
+sudo xcodebuild -runFirstLaunch      # 2) 再安装首次启动组件
+```
+
+之后 `xcodebuild -license check` / `-checkFirstLaunchStatus` 都是 **0**，
+`xcrun --find ibtool` → `/Applications/Xcode.app/Contents/Developer/usr/bin/ibtool`，
+`ibtool --version` → **27.2（bundle 25408）**。
+
+用**全新的** meson builddir 重建（旧 builddir 里 `find_program('ibtool')` 已固化成假桩路径，
+增量构建会继续产出桩，必须重新 setup）：
+
+| 项 | 值 |
+| --- | --- |
+| `strings <产物> \| grep -c FAKE-NIB` | **0** |
+| `builddir/macos/views/settingsmenu.nib` | 51.9 KB 的 `NIBArchive`（桩版本是 8 B） |
+| 未 strip 产物 | 42,387,520 B |
+| strip 后分发 | **35,513,696 B**（比桩版本 35,448,032 B 多 65,664 B，差值就是嵌入的真 nib） |
+| 符号数（`nm -a`） | 1,929（与桩版本相同） |
+
+**构建参数有一处必须补**：标准参数组要带 `-Dcjk_fallback_font=true`。
+`mochibox-macos-fixes.patch` 把 `src/display/font.cpp` 改成无条件
+`#include "wqymicrohei.ttf.xxd"`，而这个 xxd 只在 `cjk_fallback_font=true` 时才由
+`assets/meson.build` 生成。漏掉它会在 `font.cpp:49` 报
+`fatal error: 'wqymicrohei.ttf.xxd' file not found`。旧 builddir 里残留着这个文件，
+所以历史构建看不出缺口。
+
+### 验收证据：F1 + 截屏 + OCR
+
+以 `/tmp/vx-run`（VX 测试工程）为 cwd 启动新二进制，按 **F1**（`SDL_SCANCODE_F1`，
+CGKeyCode 122）后，`CGWindowListCopyWindowInfo` 里出现了第二个窗口：
+
+```text
+id=7704 pid=16858 owner=mkxp-z name=Keybindings bounds=702x339
+id=7699 pid=16858 owner=mkxp-z name=VX Test      bounds=544x448
+```
+
+`screencapture -x -o -l7704` 抓帧后用 Vision（`VNRecognizeTextRequest`）OCR，54 行，节选：
+
+```text
+Keybindings
+Select a binding. Click an empty slot to bind an action, and click a full slot to remove the binding.
+Action   Binding 1   Binding 2   Binding 3    Binding 4
+Down     Down        Pad Down    LStick Y+
+Left     Left        Pad Left    LStick X-
+Right    Right       Pad Right   LStick X+
+Up       Up          Pad Up      LStick Y-
+A        Shift       Pad X
+B        Escape      Keypad 0    X            Pad B
+C        Space       Return      Z            Pad A
+X        A           Pad Y
+Y        S           Pad LS
+Z        D           Pad RS
+L        Q           Pad LB
+R        W           Pad RB
+Accept   Cancel      Reset to Default
+```
+
+窗口标题、说明文字、四列绑定表、三个按钮全部渲染出来 —— 不是"nib 不是假桩"的间接推断，
+而是 F1 真的把设置界面弹了出来。
+
+### 历史依据（修复前复核，命令 + 退出码）
 
 ```text
 $ xcodebuild -version
@@ -139,7 +204,7 @@ $ id -Gn                             # … admin …
                                      # 用户在 admin 组，但该组对这层目录没有写权限
 ```
 
-**结论**：这台机器上 `ibtool` 两条路都不通 —— `xcrun` 侧卡许可证（69），
+**当时的结论**：这台机器上 `ibtool` 两条路都不通 —— `xcrun` 侧卡许可证（69），
 直调真身卡插件加载（255）。**不是「没装 Xcode」**，而是**装了 Xcode 27.2（27B52）、
 许可证未接受、首次启动组件未安装**。两条修复命令都要 root，而本机 `sudo -n` 直接失败
 （需要密码），脚本里不能替用户执行，也不能靠降权绕过。
@@ -154,7 +219,7 @@ license 提示。工具链**真身**（`<Developer>/Toolchains/…`、`<Develope
 （`Tests/e2e/lib/toolchain.mjs`、`Scripts/build.sh`、`Scripts/build-liblcf.sh`）。
 那条改动只影响**怎么找到编译器**，与本节的 `ibtool` 无关 —— `ibtool` 没有可用的真身替换。
 
-### 影响
+### 历史：修复前的现象
 
 构建走**假 `ibtool` 桩**：`macos/views/meson.build` 的 `custom_target` 把 `settingsmenu.xib` 编成
 `settingsmenu.nib`，桩只写出 8 字节 `FAKE-NIB`。运行时 `SettingsMenuController.mm` 用
@@ -167,9 +232,9 @@ license 提示。工具链**真身**（`<Developer>/Toolchains/…`、`<Develope
 - **不受影响**：游戏启动、渲染、输入、事件解释器、文本通道（RGSS hook）、存档。
   我们的启动路径不经过设置菜单（`GameLauncher` 注入的 `mkxp.json` 不含键位配置）。
 
-### 重开条件
+### 历史：本机是怎么修的（保留供其它机器复现）
 
-**第一条路（本机可走，需要用户手工执行两条命令，顺序不能反）**：
+**第一条路（本机走通了，需要用户手工执行两条命令，顺序不能反）**：
 
 ```bash
 sudo xcodebuild -license accept     # 1) 先接受 Xcode 许可证
@@ -190,13 +255,24 @@ ibtool --version                               # 期望打印版本号
 然后**重建** mkxp-z 并重新入库：
 
 ```bash
-# meson builddir 必须整体重建：find_program('ibtool') 的结果已固化进 build.ninja，
-# 增量构建会继续用旧的"假 ibtool"路径，nib 还是 8 字节 FAKE-NIB。
-meson setup --reconfigure <builddir> <src>   # 或干脆 rm -rf <builddir> 后重新 setup
+# 必须用**全新 builddir**：find_program('ibtool') 的结果已固化进 build.ninja，
+# 旧 builddir 增量构建会继续用假桩路径，nib 还是 8 字节 FAKE-NIB。
+# --reconfigure 也不够保险，只在删掉 builddir/macos/views/settingsmenu.nib* 后才可能生效。
+rm -rf <builddir> && meson setup <builddir> <src> --buildtype=release \
+  -Dworkdir_current=true -Dcjk_fallback_font=true \
+  -Diconv_system=enabled -Dwrap_mode=forcefallback \
+  -Dc_args=-mmacosx-version-min=13.0 -Dcpp_args=-mmacosx-version-min=13.0 \
+  -Dobjcpp_args=-mmacosx-version-min=13.0 -Dc_link_args=-mmacosx-version-min=13.0 \
+  -Dcpp_link_args=-mmacosx-version-min=13.0 -Dobjcpp_link_args=-mmacosx-version-min=13.0
 ninja -C <builddir>
+strings <builddir>/mkxp-z.aarch64 | grep -c FAKE-NIB   # 必须是 0
 bash Scripts/fetch-mkxpz.sh --force          # 重新拷贝 + strip + ad-hoc 重签
 bash Scripts/build.sh                        # 重新打包 .app
 ```
+
+`-Dcjk_fallback_font=true` 不能漏（原因见本节开头）；`Scripts/fetch-mkxpz.sh` 会在
+`MKXPZ_BINARY` 指向的产物旁读 `meson-info/intro-buildoptions.json`，只核对
+`workdir_current`，不会替你发现漏掉的字体选项。
 
 `--force` 不能省：`fetch-mkxpz.sh` 在 `vendor/runtime/mkxp-z` 已存在且 sha256 与记录一致时
 会直接跳过拷贝，不加它拿到的还是旧二进制。重建后 F1 设置菜单可用。

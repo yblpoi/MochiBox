@@ -22,7 +22,9 @@ Release 的现成二进制，而是按下面的参数现场编的。改动理由
 | ninja | 1.13.2 |
 | 部署目标 | `minos 13.0`（所有 `*-args` 显式带 `-mmacosx-version-min=13.0`） |
 
-只装 Command Line Tools 就能完成构建（不需要 Xcode），**唯一代价是设置菜单**，见下文。
+编译本身只需要 Command Line Tools；但 `settingsmenu.nib` 要真 `ibtool`，那是**完整 Xcode** 才有的组件。
+要让 F1 设置菜单可用，必须装 Xcode 且许可证 / 首启组件都就位（见「设置菜单需要真 `ibtool`」）。
+没有 Xcode 时的降级方案只影响设置菜单，见 `docs/known-limits.md#L2` 的历史段。
 
 ## 标准构建
 
@@ -32,6 +34,7 @@ Release 的现成二进制，而是按下面的参数现场编的。改动理由
 meson setup builddir . \
   --buildtype=release \
   -Dworkdir_current=true \
+  -Dcjk_fallback_font=true \
   -Diconv_system=enabled \
   -Dwrap_mode=forcefallback \
   -Dc_args=-mmacosx-version-min=13.0 \
@@ -47,6 +50,11 @@ ninja -C builddir
 
 - `-Dworkdir_current=true` 是**硬要求**：默认构建会把 cwd 改成可执行文件所在目录，
   游戏目录挂不上（`Scripts/fetch-mkxpz.sh` 会核对这一项）。
+- `-Dcjk_fallback_font=true` 是**硬要求**：`mochibox-macos-fixes.patch` 把
+  `src/display/font.cpp` 改成无条件 `#include "wqymicrohei.ttf.xxd"`，而这个 xxd 只在
+  `cjk_fallback_font=true` 时由 `assets/meson.build` 生成。漏掉它会在 `font.cpp:49` 报
+  `fatal error: 'wqymicrohei.ttf.xxd' file not found`。旧 builddir 里残留过这个文件，
+  所以历史构建看不出缺口；全新 builddir 一定会撞上。
 - `--buildtype=release` 已核实为 `optimization=3`、`debug=false`：**没有 `-g`，也没有 `-O0`**。
   其余最终值（读 `builddir/meson-info/intro-buildoptions.json` 得到）：
   `strip=false`、`b_ndebug=false`（断言保留）、`b_lto=false`、`iconv_system=enabled`。
@@ -71,8 +79,12 @@ codesign -s - --force --identifier org.mkxp-z.runtime builddir/mkxp-z.aarch64
 | --- | --- | --- | --- | --- |
 | 未 strip | 42,075,536 | 8,339,456 | 137,139 | 上游 ninja 产物 |
 | `strip -x -S` | 37,175,584 | 3,440,640 | 30,499 | 只去局部符号，保留全局符号名 |
-| `strip`（全量） | **35,448,032** | 1,703,936 | 1,929 | 等价 Xcode 的 Strip Style = All Symbols |
+| `strip`（全量） | 35,448,032 | 1,703,936 | 1,929 | 等价 Xcode 的 Strip Style = All Symbols |
+| 未 strip（真 ibtool，2026-11-02） | 42,387,520 | 8,585,216 | 137,139 | 设置菜单可用版本 |
+| `strip`（全量，真 ibtool） | **35,513,696** | 1,703,936 | 1,929 | 多出的 65,664 B 就是嵌入的真 nib |
 
+- **桩版本 vs 真 nib 版本的差值 = 65,664 B**（35,513,696 − 35,448,032）。真
+  `settingsmenu.nib` 是 51.9 KB 的 `NIBArchive`，桩只有 8 B；差额基本就是它。
 - 前两行的绝对字节数含链接期生成的 ad-hoc 签名，重建后会浮动。本机同一份源码重建：
   未 strip 42,321,472 B（`size -m` 的 `__LINKEDIT` 8,585,216 B）、`strip -x -S`
   37,392,872 B。多出的 245,936 B 全落在 `__LINKEDIT`（`otool -l` 的 filesize
@@ -90,20 +102,28 @@ codesign -s - --force --identifier org.mkxp-z.runtime builddir/mkxp-z.aarch64
 ```sh
 nm -a vendor/runtime/mkxp-z 2>/dev/null | wc -l    # 1929
 size -m vendor/runtime/mkxp-z | grep __LINKEDIT    # Segment __LINKEDIT: 1703936
-stat -f%z vendor/runtime/mkxp-z                    # 35448032
+stat -f%z vendor/runtime/mkxp-z                    # 35513696
 ```
 
-对未 strip 的产物，同样三条命令得到 `137139` / `Segment __LINKEDIT: 8339456` / `42075536`。
+对未 strip 的产物，同样三条命令得到 `137139` / `Segment __LINKEDIT: 8585216` / `42387520`
+（真 ibtool 版本；更早的桩版本是 `8339456` / `42075536`）。
 `size` 的 `-m` 不能省：只给 `-l` 时会打印 `__TEXT/__DATA/__OBJC/others` 汇总表，不列段名
 （`-l` 只是 `-m` 的修饰符）；需要交叉核对时用 `size -m -l …` 会额外给出 fileoff。
 
-## 设置菜单为什么不可用（假 `ibtool` 桩）
+## 设置菜单需要真 `ibtool`
 
 `macos/views/meson.build` 用 `ibtool --compile` 把 `settingsmenu.xib` 编成
 `settingsmenu.nib`，再 xxd 成 `settingsmenu.nib.xxd` 嵌入二进制
 （`mkxp_macos_settingsmenu_nib`）。`ibtool` **只有完整 Xcode 才有**，Command Line Tools 没有。
 
-没有 Xcode 时的绕法：在 PATH 前面放一个假 `ibtool`，把 `--compile` 的目标写成 8 字节桩：
+**受支持的路径是真 Xcode**：装 Xcode → 接受许可证 → `sudo xcodebuild -runFirstLaunch` →
+`which ibtool` 能打印版本。缺任何一步，构建会在 `custom_target` 阶段拿到非 0 退出码
+（不会静默降级）。本机 2026-11-02 按这条路走通，产物 `FAKE-NIB` 计数 0、F1 设置菜单可用，
+完整证据见 `docs/known-limits.md#L2`。
+
+### 降级方案（无 Xcode，**设置菜单不可用**）
+
+只在确实装不了 Xcode 时用。在 PATH 前面放一个假 `ibtool`，把 `--compile` 的目标写成 8 字节桩：
 
 ```sh
 mkdir -p /tmp/fakebin
@@ -127,7 +147,7 @@ PATH=/tmp/fakebin:$PATH meson setup builddir . \
 可执行文件所在目录，挂载根错位，启动即看不到游戏数据；`Scripts/fetch-mkxpz.sh` 的
 `check_workdir_current()` 会拦下这种产物。
 
-后果：`macos/views/SettingsMenuController.mm:96-100` 用
+降级方案的后果：`macos/views/SettingsMenuController.mm:96-100` 用
 `[[NSNib alloc] initWithNibData:...]` 加载这 8 个字节，返回 nil 后抛
 `could not load settingsmenu.nib`（`NSInternalInconsistencyException`）。
 **游戏启动、渲染、输入、事件解释器都不受影响**；只有运行中按 **F1**（`settingsmenu.cpp`
@@ -139,21 +159,27 @@ PATH=/tmp/fakebin:$PATH meson setup builddir . \
 strings builddir/mkxp-z.aarch64 | grep -c FAKE-NIB   # >0 = 桩版本
 ```
 
-### 有真 Xcode 时怎么让设置菜单可用
+### 复现步骤（本机 2026-11-02 走通）
 
-1. 装完整 Xcode（不是 CLT），确认 `ibtool` 是真的：
+1. 装完整 Xcode（不是 CLT），接受许可证并跑完首启，确认 `ibtool` 是真的：
 
    ```sh
-   export PATH="/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH"
-   which ibtool && ibtool --version     # 应打印 Xcode 的 ibtool 版本
+   # 两条都要 root，顺序不能反：许可证没接受时 -runFirstLaunch 自己也会被拦
+   sudo xcodebuild -license accept
+   sudo xcodebuild -runFirstLaunch
+
+   xcodebuild -license check ; echo $?          # 0
+   xcodebuild -checkFirstLaunchStatus ; echo $? # 0
+   xcrun --find ibtool                          # /Applications/Xcode.app/.../usr/bin/ibtool
+   ibtool --version                             # 27.2（bundle 25408）
    ```
 
-   或者 `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`。
+   若 `xcode-select -p` 仍指向 CommandLineTools，再 `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`。
 
-2. **删掉 builddir 重新 `meson setup`**。不能只 `ninja`：`settingsmenu.nib` 是
-   `custom_target`，旧输出还在，且 `find_program('ibtool')` 的解析结果已固化进
-   `build.ninja`。要重跑就得新建 builddir（或至少删掉
-   `builddir/macos/views/settingsmenu.nib*` 后 `meson setup --reconfigure`）。
+2. **用全新的 builddir 重新 `meson setup`**（`rm -rf builddir`）。不能只 `ninja`：
+   `settingsmenu.nib` 是 `custom_target`，旧输出还在，且 `find_program('ibtool')` 的解析结果
+   已固化进 `build.ninja`。`--reconfigure` 也不可靠 —— 本机实测仍会复用旧路径。
+   完整参数见上文「标准构建」，**含 `-Dcjk_fallback_font=true`**。
 
 3. `ninja -C builddir`，然后确认桩已消失：
 
@@ -171,9 +197,10 @@ strings builddir/mkxp-z.aarch64 | grep -c FAKE-NIB   # >0 = 桩版本
    MKXPZ_BINARY=/path/to/builddir/mkxp-z.aarch64 bash Scripts/fetch-mkxpz.sh --force
    ```
 
-替代方案（未做）：在有 Xcode 的机器上生成一次 `settingsmenu.nib` 入库，把
-`macos/views/meson.build` 里那个 `custom_target` 换成 `copy`，这样 CLT 机器也能编出
-带可用设置菜单的二进制。
+可选优化（未做）：把真 `ibtool` 生成的 `settingsmenu.nib` 入库，将
+`macos/views/meson.build` 里那个 `custom_target` 换成 `copy`，这样只有 CLT 的机器也能编出
+带可用设置菜单的二进制。收益是省掉对 Xcode 的依赖，代价是 `settingsmenu.xib` 与 nib
+可能漂移（改 xib 后必须重新生成并入库）。
 
 ## 本地补丁（GPL-2.0-or-later 合规所需）
 
