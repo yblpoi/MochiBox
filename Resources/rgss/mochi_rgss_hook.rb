@@ -13,6 +13,9 @@
 #
 # 环境变量：
 #   MOCHI_RGSS_HOOK=off     完全不安装（游戏行为不变）
+#   MOCHI_RGSS_SURFACES=... 逗号分隔的界面清单，默认全开：
+#                           message,menu,choice,help,battle
+#                           （choice 在 XP/VX 上并入 message，见 docs/rgss-text-channel.md）
 #   MOCHI_RGSS_HOST=...     默认 127.0.0.1
 #   MOCHI_RGSS_PORT=...     默认 47123
 #   MOCHI_RGSS_LOG=...      默认 /tmp/mochi-rgss.log（超过 1 MB 自动截断）
@@ -49,6 +52,25 @@ module MochiRGSSHook
     [:refresh,          'RGSS1']
   ].freeze unless const_defined?(:ENTRY_TABLE, false)
 
+  # 文本面。每个面对应一个“有语义的上层入口”，绝不 hook Window_Base#draw_text
+  # （它是逐字调用的，单字送翻译会丢语义并放大请求量）。
+  SURFACE_MESSAGE = 'message' unless const_defined?(:SURFACE_MESSAGE, false)
+  SURFACE_MENU    = 'menu'    unless const_defined?(:SURFACE_MENU, false)
+  SURFACE_CHOICE  = 'choice'  unless const_defined?(:SURFACE_CHOICE, false)
+  SURFACE_HELP    = 'help'    unless const_defined?(:SURFACE_HELP, false)
+  SURFACE_BATTLE  = 'battle'  unless const_defined?(:SURFACE_BATTLE, false)
+
+  ALL_SURFACES = [
+    SURFACE_MESSAGE, SURFACE_MENU, SURFACE_CHOICE, SURFACE_HELP, SURFACE_BATTLE
+  ].freeze unless const_defined?(:ALL_SURFACES, false)
+
+  # 需要等 :end 的类。VX 的战斗日志叫 Window_BattleMessage，VX Ace 叫
+  # Window_BattleLog；两者都是战斗面，先出现的那个生效。
+  TARGET_CLASSES = [
+    'Window_Message', 'Window_Command', 'Window_ChoiceList',
+    'Window_Help', 'Window_BattleMessage', 'Window_BattleLog'
+  ].freeze unless const_defined?(:TARGET_CLASSES, false)
+
   class << self
     # ------------------------------------------------------------------
     # 安装
@@ -63,13 +85,17 @@ module MochiRGSSHook
         return
       end
 
+      enabled = enabled_surfaces
       log("socket probe: Socket.tcp=#{defined?(Socket) && Socket.respond_to?(:tcp) ? 'yes' : 'no'} TCPSocket=#{defined?(TCPSocket) ? 'yes' : 'no'}")
+      log("surfaces enabled: #{enabled.empty? ? '(none)' : enabled.join(',')}")
 
-      if window_message_defined?
-        hook_window_message('defined-at-load')
-      else
-        arm_tracepoint
+      if enabled.empty?
+        log('no surfaces enabled; pass-through only')
+        return
       end
+
+      hook_available_surfaces('defined-at-load')
+      arm_tracepoint if wait_for_more_surfaces?
     rescue Exception => e
       log("install failed: #{e.class}: #{e.message}")
     end
@@ -80,78 +106,331 @@ module MochiRGSSHook
       false
     end
 
-    def window_message_defined?
-      Object.const_defined?(:Window_Message) &&
-        Object.const_get(:Window_Message).is_a?(Class)
+    # MOCHI_RGSS_SURFACES 只认白名单里的名字；未知名字记日志后忽略。
+    # 空值 = 全开；显式 none 会得到空清单（只做原文直通）。
+    def enabled_surfaces
+      return $mochi_hook_enabled_surfaces if $mochi_hook_enabled_surfaces
+
+      raw = ENV['MOCHI_RGSS_SURFACES']
+      $mochi_hook_enabled_surfaces =
+        if raw.nil? || raw.strip.empty?
+          ALL_SURFACES.dup
+        else
+          names = raw.split(',').map { |name| name.strip.downcase }.reject { |name| name.empty? }
+          unknown = names - ALL_SURFACES
+          log("unknown surfaces ignored: #{unknown.join(',')}") unless unknown.empty?
+          names & ALL_SURFACES
+        end
+    rescue Exception => e
+      log("surface list failed: #{e.class}: #{e.message}")
+      ALL_SURFACES.dup
+    end
+
+    def surface_enabled?(surface)
+      enabled_surfaces.include?(surface)
+    end
+
+    def installed_surfaces
+      $mochi_hook_installed_surfaces ||= {}
+    end
+
+    def surface_installed?(surface)
+      installed_surfaces.key?(surface)
+    end
+
+    def mark_installed(surface, detail)
+      installed_surfaces[surface] = detail
+      log("hooked #{surface}: #{detail}")
+    end
+
+    def class_defined?(name)
+      Object.const_defined?(name) && Object.const_get(name).is_a?(Class)
     rescue Exception
       false
     end
 
-    # preload 阶段 Window_Message 还没定义：等类定义结束再挂。
+    def method_present?(cls, name)
+      cls.method_defined?(name) || cls.private_method_defined?(name)
+    rescue Exception
+      false
+    end
+
+    # 只看本类自身定义的方法：子类会继承父类的 mochi_orig_*，
+    # 用 method_defined? 判断会误以为子类已经挂过，从而漏挂子类覆盖的入口。
+    def own_method_defined?(cls, name)
+      cls.instance_methods(false).include?(name) ||
+        cls.private_instance_methods(false).include?(name)
+    rescue Exception
+      false
+    end
+
+    # 只在类定义结束时挂“已经存在”的面；每个面各自 begin/rescue，
+    # 一个面失败不会影响其它面。
+    def hook_available_surfaces(trigger)
+      [
+        SURFACE_MESSAGE, SURFACE_MENU, SURFACE_CHOICE,
+        SURFACE_HELP, SURFACE_BATTLE
+      ].each do |surface|
+        next unless surface_enabled?(surface)
+        next if surface_installed?(surface)
+
+        begin
+          case surface
+          when SURFACE_MESSAGE then hook_message(trigger)
+          when SURFACE_MENU    then hook_menu(trigger)
+          when SURFACE_CHOICE  then hook_choice(trigger)
+          when SURFACE_HELP    then hook_help(trigger)
+          when SURFACE_BATTLE  then hook_battle(trigger)
+          end
+        rescue Exception => e
+          log("#{surface} hook failed: #{e.class}: #{e.message}")
+        end
+      end
+
+      warn_embedded_surfaces
+      maybe_disarm_tracepoint
+    end
+
+    # preload 阶段目标类还没定义：等类定义结束再挂。
     def arm_tracepoint
+      return if $mochi_hook_trace
+
       $mochi_hook_trace = TracePoint.new(:end) do |tp|
         begin
-          next unless tp.self.is_a?(Class) && tp.self.name == 'Window_Message'
+          next unless tp.self.is_a?(Class)
 
-          hook_window_message('tracepoint')
-          if $mochi_hook_entry && $mochi_hook_trace
-            $mochi_hook_trace.disable
-          end
+          name = tp.self.name
+          next unless name && TARGET_CLASSES.include?(name)
+
+          hook_available_surfaces("tracepoint:#{name}")
         rescue Exception => e
           log("tracepoint callback error: #{e.class}: #{e.message}")
         end
       end
       $mochi_hook_trace.enable
-      log('tracepoint armed; waiting for Window_Message')
+      log('tracepoint armed; waiting for surface classes')
     rescue Exception => e
       log("tracepoint arm failed: #{e.class}: #{e.message}")
     end
 
-    # 只 hook 一个入口；按“方法存在”判断（默认脚本的入口都定义在 Window_Message 自身）。
-    def hook_window_message(trigger)
-      return if $mochi_hook_entry
+    def wait_for_more_surfaces?
+      expected = expected_surfaces
+      return true if expected.nil?
+
+      expected.any? { |surface| !surface_installed?(surface) }
+    end
+
+    # 当前版本上“可以独立 hook”的面。XP 的选项/战斗日志都走 message，
+    # VX 的选项也走 message；它们不阻塞 TracePoint 关闭。
+    def expected_surfaces
+      list = case detect_version
+             when 'RGSS1' then [SURFACE_MESSAGE, SURFACE_MENU, SURFACE_HELP]
+             when 'RGSS2' then [SURFACE_MESSAGE, SURFACE_MENU, SURFACE_HELP, SURFACE_BATTLE]
+             when 'RGSS3' then [SURFACE_MESSAGE, SURFACE_MENU, SURFACE_CHOICE, SURFACE_HELP, SURFACE_BATTLE]
+             end
+      list && list.select { |surface| surface_enabled?(surface) }
+    end
+
+    def maybe_disarm_tracepoint
+      return unless $mochi_hook_trace
+
+      expected = expected_surfaces
+      return if expected.nil?
+      return unless expected.all? { |surface| surface_installed?(surface) }
+
+      $mochi_hook_trace.disable
+      log("tracepoint disabled (version=#{detect_version})")
+    rescue Exception => e
+      log("tracepoint disarm failed: #{e.class}: #{e.message}")
+    end
+
+    def detect_version
+      if class_defined?('Window_Message')
+        cls = Object.const_get(:Window_Message)
+        return 'RGSS3' if method_present?(cls, :process_all_text)
+        return 'RGSS2' if method_present?(cls, :start_message)
+        return 'RGSS1' if method_present?(cls, :refresh)
+      end
+
+      return 'RGSS3' if class_defined?('Window_BattleLog') || class_defined?('Window_ChoiceList')
+      return 'RGSS2' if class_defined?('Window_BattleMessage')
+
+      nil
+    rescue Exception
+      nil
+    end
+
+    def rgss_version
+      $mochi_hook_version ||= detect_version || 'RGSS1'
+    end
+
+    # 旧版本没有独立入口的面：不谎报 hooked，但要在日志里说清楚它挂在谁身上。
+    def warn_embedded_surfaces
+      version = detect_version
+      return unless version
+
+      embedded = case version
+                 when 'RGSS1' then [SURFACE_CHOICE, SURFACE_BATTLE]
+                 when 'RGSS2' then [SURFACE_CHOICE]
+                 else []
+                 end
+
+      embedded.each do |surface|
+        next unless surface_enabled?(surface)
+
+        $mochi_hook_embedded_noted ||= {}
+        next if $mochi_hook_embedded_noted[surface]
+
+        $mochi_hook_embedded_noted[surface] = true
+        log("#{surface} on #{version} has no separate entry; it rides #{SURFACE_MESSAGE}")
+        unless surface_enabled?(SURFACE_MESSAGE)
+          log("warning: #{surface} needs #{SURFACE_MESSAGE} on #{version}, but message is disabled")
+        end
+      end
+    end
+
+    def message_entry(cls)
+      ENTRY_TABLE.each do |name, version|
+        return [name, version] if method_present?(cls, name)
+      end
+      nil
+    rescue Exception
+      nil
+    end
+
+    def hook_message(trigger)
+      return false unless class_defined?('Window_Message')
 
       cls = Object.const_get(:Window_Message)
-      entry = nil
-      version = nil
-
-      ENTRY_TABLE.each do |name, ver|
-        if cls.method_defined?(name) || cls.private_method_defined?(name)
-          entry = name
-          version = ver
-          break
-        end
-      end
-
+      entry, version = message_entry(cls)
       unless entry
         log('Window_Message found but no known text entry; waiting for another class end')
-        return
+        return false
       end
 
-      hook_entry = entry
-      hook_version = version
       was_private = cls.private_method_defined?(entry)
+      already_wrapped = own_method_defined?(cls, :"mochi_orig_#{entry}")
 
       cls.class_eval do
-        alias_method :"mochi_orig_#{hook_entry}", hook_entry
+        if already_wrapped
+          # 上一次安装中途失败时留下的 alias：不要再包一层。
+        else
+          alias_method :"mochi_orig_#{entry}", entry
 
-        define_method(hook_entry) do |*args|
-          begin
-            MochiRGSSHook.rewrite(hook_version)
-          rescue Exception => e
-            MochiRGSSHook.log("hook body error: #{e.class}: #{e.message}")
+          define_method(entry) do |*args|
+            begin
+              MochiRGSSHook.rewrite(version)
+            rescue Exception => e
+              MochiRGSSHook.log("message hook body error: #{e.class}: #{e.message}")
+            end
+            send(:"mochi_orig_#{entry}", *args)
           end
-          send(:"mochi_orig_#{hook_entry}", *args)
         end
 
-        private hook_entry if was_private
+        private entry if was_private
       end
 
       $mochi_hook_entry = entry
       $mochi_hook_version = version
-      log("hooked Window_Message##{entry} as #{version} (trigger=#{trigger})")
+      mark_installed(SURFACE_MESSAGE, "Window_Message##{entry} as #{version} (trigger=#{trigger})")
+      true
     rescue Exception => e
-      log("hook_window_message failed: #{e.class}: #{e.message}")
+      log("hook_message failed: #{e.class}: #{e.message}")
+      false
+    end
+
+    def hook_menu(trigger)
+      return false unless class_defined?('Window_Command')
+
+      cls = Object.const_get(:Window_Command)
+      return false unless method_present?(cls, :draw_item)
+
+      install_method_hooks(SURFACE_MENU, cls, [:draw_item], trigger)
+    rescue Exception => e
+      log("hook_menu failed: #{e.class}: #{e.message}")
+      false
+    end
+
+    def hook_choice(trigger)
+      return false unless class_defined?('Window_ChoiceList')
+
+      cls = Object.const_get(:Window_ChoiceList)
+      methods = [:start, :draw_item].select { |name| method_present?(cls, name) }
+      return false if methods.empty?
+
+      install_method_hooks(SURFACE_CHOICE, cls, methods, trigger)
+    rescue Exception => e
+      log("hook_choice failed: #{e.class}: #{e.message}")
+      false
+    end
+
+    def hook_help(trigger)
+      return false unless class_defined?('Window_Help')
+
+      cls = Object.const_get(:Window_Help)
+      return false unless method_present?(cls, :set_text)
+
+      install_method_hooks(SURFACE_HELP, cls, [:set_text], trigger)
+    rescue Exception => e
+      log("hook_help failed: #{e.class}: #{e.message}")
+      false
+    end
+
+    def hook_battle(trigger)
+      if class_defined?('Window_BattleMessage')
+        cls = Object.const_get(:Window_BattleMessage)
+        methods = [:add_instant_text, :replace_instant_text].select do |name|
+          method_present?(cls, name)
+        end
+        return install_method_hooks(SURFACE_BATTLE, cls, methods, trigger) unless methods.empty?
+      end
+
+      if class_defined?('Window_BattleLog')
+        cls = Object.const_get(:Window_BattleLog)
+        methods = [:add_text, :replace_text].select do |name|
+          method_present?(cls, name)
+        end
+        return install_method_hooks(SURFACE_BATTLE, cls, methods, trigger) unless methods.empty?
+      end
+
+      false
+    rescue Exception => e
+      log("hook_battle failed: #{e.class}: #{e.message}")
+      false
+    end
+
+    def install_method_hooks(surface, cls, methods, trigger)
+      return false if methods.empty? || surface_installed?(surface)
+
+      methods.each do |method|
+        was_private = cls.private_method_defined?(method)
+        already_wrapped = own_method_defined?(cls, :"mochi_orig_#{method}")
+
+        cls.class_eval do
+          if already_wrapped
+            # 上一次安装中途失败时留下的 alias：不要再包一层。
+          else
+            alias_method :"mochi_orig_#{method}", method
+
+            define_method(method) do |*args|
+              begin
+                MochiRGSSHook.rewrite_surface(surface, self, args, method)
+              rescue Exception => e
+                MochiRGSSHook.log("#{surface} hook body error: #{e.class}: #{e.message}")
+              end
+              send(:"mochi_orig_#{method}", *args)
+            end
+          end
+
+          private method if was_private
+        end
+      end
+
+      mark_installed(surface, "#{cls}##{methods.join('/')} (trigger=#{trigger})")
+      true
+    rescue Exception => e
+      log("install_method_hooks(#{surface}) failed: #{e.class}: #{e.message}")
+      false
     end
 
     # ------------------------------------------------------------------
@@ -166,6 +445,90 @@ module MochiRGSSHook
       end
     rescue Exception => e
       log("rewrite failed: #{e.class}: #{e.message}")
+    end
+
+    # ------------------------------------------------------------------
+    # 非消息面的改写：拿到上层入口的字符串 / 列表项，替换后原样调用 super
+    # ------------------------------------------------------------------
+    def rewrite_surface(surface, window, args, method = nil)
+      case surface
+      when SURFACE_CHOICE
+        if method == :start
+          rewrite_choices
+        else
+          rewrite_command_item(window, args[0])
+        end
+      when SURFACE_MENU
+        rewrite_command_item(window, args[0])
+      when SURFACE_HELP, SURFACE_BATTLE
+        rewrite_text_argument(args, 0)
+      end
+    rescue Exception => e
+      log("#{surface} rewrite failed: #{e.class}: #{e.message}")
+    end
+
+    # XP/VX 的 Window_Command 用 @commands[index]；VX Ace 用 @list[index][:name]。
+    # 只改数组/哈希里的那一项，不 replace 原字符串（避免改到 Vocab 常量）。
+    def rewrite_command_item(window, index)
+      return unless index.is_a?(Integer) && index >= 0
+
+      if window.instance_variable_defined?(:@commands)
+        list = window.instance_variable_get(:@commands)
+        if list.is_a?(Array) && index < list.size && list[index].is_a?(String)
+          original = list[index]
+          translated = translate_line(original, rgss_version)
+          list[index] = translated if translated && translated != original
+          return
+        end
+      end
+
+      return unless window.instance_variable_defined?(:@list)
+
+      list = window.instance_variable_get(:@list)
+      return unless list.is_a?(Array) && index < list.size
+
+      entry = list[index]
+      return unless entry.is_a?(Hash)
+
+      key = entry.key?(:name) ? :name : (entry.key?('name') ? 'name' : nil)
+      return unless key && entry[key].is_a?(String)
+
+      original = entry[key]
+      translated = translate_line(original, rgss_version)
+      entry[key] = translated if translated && translated != original
+    rescue Exception => e
+      log("rewrite_command_item failed: #{e.class}: #{e.message}")
+    end
+
+    # VX Ace 的选项是 $game_message.choices 数组：在 start 里先整组替换，
+    # 这样 update_placement 量宽度时用的就是译文，不会按原文裁掉。
+    def rewrite_choices
+      return unless defined?($game_message) && $game_message
+      return unless $game_message.respond_to?(:choices)
+
+      choices = $game_message.choices
+      return unless choices.is_a?(Array)
+
+      choices.map! do |choice|
+        if choice.is_a?(String) && !choice.empty?
+          translate_line(choice, rgss_version) || choice
+        else
+          choice
+        end
+      end
+    rescue Exception => e
+      log("rewrite_choices failed: #{e.class}: #{e.message}")
+    end
+
+    # Window_Help#set_text / Window_BattleLog#add_text 等都是单字符串参数。
+    def rewrite_text_argument(args, index)
+      text = args[index]
+      return unless text.is_a?(String) && !text.empty?
+
+      translated = translate_line(text, rgss_version)
+      args[index] = translated if translated && translated != text
+    rescue Exception => e
+      log("rewrite_text_argument failed: #{e.class}: #{e.message}")
     end
 
     # XP：$game_temp.message_text 是单个字符串（可含 \n 与控制符）。
