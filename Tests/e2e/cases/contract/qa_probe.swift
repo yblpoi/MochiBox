@@ -163,6 +163,14 @@ struct QAProbe {
 
     // MARK: - V6 引擎识别
 
+    /// 从命令行取 --root <path>（仓库根）。取不到返回 nil，由调用方转为一条失败断言，
+    /// 而不是猜 cwd —— 探针在 mkdtemp 里编译，cwd 不可靠。
+    static func argument(_ name: String) -> String? {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: name), index + 1 < args.count else { return nil }
+        return args[index + 1]
+    }
+
     static func engineDetection(_ r: Reporter) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("MochiBox-qa-engines-\(getpid())", isDirectory: true)
@@ -300,6 +308,32 @@ struct QAProbe {
         if !uncovered.isEmpty { wrong.append("uncovered=\(uncovered.joined(separator: ","))") }
         r.check("V6-29", "launchBackend 穷举表", wrong.isEmpty,
                 "wrong=\(wrong) covered=\(covered.count)/\(EngineKind.allCases.count)")
+
+        // ---- V6-30..33 真实 fixture 的四版本映射 ----
+        // 依据 docs/rpgmaker-runtime-verification.md：仓里四个 fixture 各自认成哪个引擎、
+        // 声明级别是什么。rgss1/2/3 的 launchBackend 仍是 nil —— mkxp-z 已实测能跑
+        // （XP / VX / VX Ace 都有游戏画面证据），但二进制还没打包进 .app；
+        // 这里钉住"没打包就没后端"，接 mkxpz 时这四条会红，提醒同步文档与 V6-29 的穷举表。
+        if let repoRoot = Self.argument("--root") {
+            let fixtures: [(String, String, EngineKind)] = [
+                ("V6-30", "rm2000", .easyrpg),
+                ("V6-31", "rmxp", .rgss1),
+                ("V6-32", "rmvx", .rgss2),
+                ("V6-33", "rmvxace", .rgss3)
+            ]
+            for (id, name, want) in fixtures {
+                let url = URL(fileURLWithPath: repoRoot).appendingPathComponent("Fixtures/" + name)
+                let result = EngineDetector.detect(url)
+                let backend = want.launchBackend?.rawValue ?? "nil"
+                let ok = result.engine == want
+                    && result.supportLevel == want.declaredSupportLevel
+                    && want.launchBackend == result.engine.launchBackend
+                r.check(id, "fixture \(name) → \(want.rawValue) / backend=\(backend)", ok,
+                        "expected \(want.rawValue)/\(want.declaredSupportLevel.rawValue)/backend=\(backend) actual \(result.engine.rawValue)/\(result.supportLevel.rawValue)/backend=\(result.engine.launchBackend?.rawValue ?? "nil") evidence=\(result.evidence)")
+            }
+        } else {
+            r.check("V6-30", "fixture 四版本映射前置条件", false, "未传 --root，拿不到仓库根")
+        }
 
         try? FileManager.default.removeItem(at: root)
     }

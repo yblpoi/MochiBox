@@ -65,7 +65,7 @@ runCase('domain', async (tap) => {
       return;
     }
 
-    const result = runProbe(compiled.bin, ['--http-base', 'http://127.0.0.1:' + port]);
+    const result = runProbe(compiled.bin, ['--root', ROOT, '--http-base', 'http://127.0.0.1:' + port]);
     tap.absorbTap(result.stdout);
 
     if (result.stderr.trim() !== '') {

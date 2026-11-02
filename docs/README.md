@@ -2,7 +2,7 @@
 
 # docs/ — 文档地图
 
-当前有效 **14 份 .md**（含本索引）、**1 份 html**、`assets/` 2 张截图；
+当前有效 **17 份 .md**（含本索引）、**1 份 html**、`assets/` 2 张截图；
 V0.1–V0.4 的历史文档与图表整齐归档在 [`archive/`](archive/)（18 个文件），不再混在根目录。
 
 状态只有三种：`当前有效` / `历史证据（绑 <sha 或版本>）` / `存档`。
@@ -40,6 +40,9 @@ V0.1–V0.4 的历史文档与图表整齐归档在 [`archive/`](archive/)（18 
 | [re-findings.md](re-findings.md) | 逆向证据档案（观测 / 推断 / 未知三分） | 当前有效 |
 | [re-cheat-and-fulltext.md](re-cheat-and-fulltext.md) | V0.6 修改器 57 项与全文翻译容器的逆向证据 | 当前有效 |
 | [media-compat-vp9-alpha.md](media-compat-vp9-alpha.md) | 媒体兼容：VP9-alpha 黑块与循环视频停帧的根因、修法与实测 | 当前有效 |
+| [rpgmaker-classic-compat.md](rpgmaker-classic-compat.md) | 2000/2003 与 RGSS 三版的兼容路线：数据层、运行时、许可与缺口 | 当前有效 |
+| [rgss-wiring-notes.md](rgss-wiring-notes.md) | RGSS 数据层接线笔记：Marshal 往返、文本路径、Scripts 跳过 | 当前有效 |
+| [rpgmaker-runtime-verification.md](rpgmaker-runtime-verification.md) | 四版本运行时实测记录：证据分级、VX/VX Ace 脚本来源审计、复现要点 | 当前有效 |
 
 ## 二、历史归档 [`archive/`](archive/)
 
