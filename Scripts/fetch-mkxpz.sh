@@ -89,11 +89,14 @@ cp "$MKXPZ_BINARY" "$BIN" || { echo "error: 拷贝失败" >&2; exit 1; }
 chmod +x "$BIN"
 
 # --- 体积：剥离符号 ---------------------------------------------------------
-# 上游产物带 137,139 个符号，__LINKEDIT 占 8,324,496 B（符号表 6,777,728 B）。
+# 上游产物带 137,139 个符号，__LINKEDIT 占 8,339,456 B（`size -m` 的 vmsize 口径；
+# `otool -l` 报的 filesize 是 8,324,496 B），其中 LC_SYMTAB 6,777,728 B。
 # meson 的 `-Dstrip=true` **只在 `meson install` 时**生效；我们是直接消费 builddir
 # 的二进制，所以在这里补一次等价的 `strip`（不带参数 = 删掉 dyld 不需要的全部符号，
 # 语义同 Xcode 的 "Strip Style: All Symbols"）。
 # 实测 42,075,536 B → 35,448,032 B；strip 会作废签名，因此必须放在重签**之前**。
+# 未 strip 的字节数会随链接期 ad-hoc 签名浮动（本机重建为 42,321,472 B，差额全在
+# __LINKEDIT），strip + 重签后的 35,448,032 B 才是稳定值，验收以它为准。
 # 不要用 upx：macOS 上会破坏代码签名，且被杀软误报。
 PRE_STRIP_SIZE=$(size "$BIN")
 strip "$BIN" 2>/dev/null || { echo "error: strip 失败（产物未改，不要发包）" >&2; exit 1; }

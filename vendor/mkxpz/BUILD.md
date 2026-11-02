@@ -73,6 +73,10 @@ codesign -s - --force --identifier org.mkxp-z.runtime builddir/mkxp-z.aarch64
 | `strip -x -S` | 37,175,584 | 3,440,640 | 30,499 | 只去局部符号，保留全局符号名 |
 | `strip`（全量） | **35,448,032** | 1,703,936 | 1,929 | 等价 Xcode 的 Strip Style = All Symbols |
 
+- 前两行的绝对字节数含链接期生成的 ad-hoc 签名，重建后会浮动。本机同一份源码重建：
+  未 strip 42,321,472 B（`size -m` 的 `__LINKEDIT` 8,585,216 B）、`strip -x -S`
+  37,392,872 B。多出的 245,936 B 全落在 `__LINKEDIT`（`otool -l` 的 filesize
+  8,324,496 → 8,570,432）。全量 `strip` + 重签后的 **35,448,032 B 不变**，跨构建以它为准。
 - 分发用**全量 `strip`**：省 6,627,504 B（−15.8%）。`strip -x -S` 只省 4,899,952 B，
   多出来的 1.7 MB 是全局符号名；保留它们对运行没有帮助。
 - `strip` 会作废已有签名（实测：strip 后不重签直接运行，进程立即消失、日志为空），
