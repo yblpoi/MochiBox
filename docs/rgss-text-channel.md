@@ -320,7 +320,8 @@ VERSION="RGSS3"  RENDERED=["【中文测试】"]
 6. **延迟。** 请求在游戏主线程同步执行；单行最坏 0.2 s，多行消息会累加。缓存和 2 s 冷却只能兜底，
    产品化建议预取/批量/异步，或把超时再压小。
 7. **安全。** 默认只连 `127.0.0.1`；协议无认证、无加密。不要监听公网，也不要把端口暴露给不可信进程。
-8. **未接入产品。** `GameLauncher` 没有改；本文件只交付脚本与文档。
+8. **已接入产品（通路版）。** `GameLauncher` 已注入 `preloadScript`，`RGSSBridge` 监听 loopback 随机端口；
+   翻译来源仍是测试词典（见 `RGSSBridge.testDictionary`），接 LLM 是下一步。
 
 ## 9. 本地复现
 
@@ -376,9 +377,10 @@ cd /tmp/xp-run && ./shot /tmp/xp-run/hook-msg.png
 
 期望 OCR 出现 `【中文测试】`；hook 日志出现 `hooked Window_Message#refresh as RGSS1` 与 `RESP seq=...`。
 
-## 10. 后续接入（本次不做）
+## 10. 后续工作
 
-- 由 `GameLauncher` 在启动前把 hook 写到游戏可写目录，或使用 app 资源里的**绝对路径**注入
-  `preloadScript`；退出时清理。
+- ~~由 `GameLauncher` 在启动前把 hook 写到游戏可写目录，或使用 app 资源里的**绝对路径**注入
+  `preloadScript`；退出时清理。~~ 已完成：绝对路径注入 + 退出按原字节还原。
+- 接真正的翻译来源（当前是 `RGSSBridge.testDictionary` 的 15 条测试词典）。
 - 服务端持久化连接、批量请求、控制符感知分段、失败指标与超时策略。
 - 只对白名单场景（对话、选项、滚动文本）开启，避免把菜单/调试文本也送进翻译管线。

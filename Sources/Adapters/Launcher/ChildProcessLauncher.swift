@@ -35,7 +35,8 @@ enum ChildProcessLauncher {
         executable: URL,
         arguments: [String],
         workingDirectory: URL,
-        logURL: URL
+        logURL: URL,
+        environment: [String: String] = [:]
     ) throws -> Launched {
         FileManager.default.createFile(
             atPath: logURL.path,
@@ -48,6 +49,15 @@ enum ChildProcessLauncher {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = workingDirectory
+        // 额外变量在父进程环境上叠加（不是替换）：子进程仍要拿到 HOME / PATH / locale。
+        // RGSS 文本通道只靠这一条把随机端口传给 hook（MOCHI_RGSS_PORT）。
+        if !environment.isEmpty {
+            var merged = ProcessInfo.processInfo.environment
+            for (key, value) in environment {
+                merged[key] = value
+            }
+            process.environment = merged
+        }
         if let logHandle = logHandle {
             process.standardOutput = logHandle
             process.standardError = logHandle

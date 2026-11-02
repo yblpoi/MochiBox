@@ -100,6 +100,8 @@ actor GameLauncher {
     /// 只在这里留引用：`terminate` 是唯一能保证"进程已经不在读配置"的收口点，
     /// 启动失败的分支自己就地还原（那时还没有 pid）。
     private var mkxpOverlays: [Int32: MKXPZGameConfig.Overlay] = [:]
+    /// mkxp-z 的 RGSS 文本桥（pid → 监听器）。`terminate` 时关闭监听并断开在飞连接。
+    private var rgssBridges: [Int32: RGSSBridge] = [:]
 
     private let webPorts: WebPortAssignments
     /// 运行期目录（`--selftest` 用临时根注入，保证不写用户目录）。
@@ -784,13 +786,49 @@ actor GameLauncher {
         let logURL = paths.logsDirectory
             .appendingPathComponent("mkxpz-\(Timestamp.fileStamp())-\(gameHash.prefix(8)).log")
 
+        // RGSS 文本通道：hook 脚本随包分发，桥监听 loopback 随机端口。
+        // 任何一环缺失都**不注入** preloadScript —— 让游戏按原文跑，比启动失败好。
+        let hookScript = MKXPZGameConfig.bundledHookScript()
+        var bridge: RGSSBridge?
+        var bridgePort: Int?
+
+        if let hookScript = hookScript {
+            let candidate = RGSSBridge()
+            do {
+                bridgePort = try candidate.start()
+                bridge = candidate
+                log?.info("GameLauncher", "RGSS 文本桥已启动", [
+                    "port": "\(bridgePort ?? 0)",
+                    "hook": hookScript.path,
+                    "source": "test-dictionary"
+                ])
+            } catch {
+                log?.warn("GameLauncher", "RGSS 文本桥启动失败，本次不翻译", [
+                    "error": "\(error.localizedDescription)"
+                ])
+                NSLog("MochiBox: RGSS 文本桥启动失败：%@", "\(error)")
+            }
+        } else {
+            log?.warn("GameLauncher", "缺少 RGSS hook 脚本，本次不注入 preloadScript", [
+                "expected": "Contents/Resources/rgss/mochi_rgss_hook.rb"
+            ])
+            NSLog("MochiBox: 缺少 RGSS hook 脚本，本次不注入 preloadScript")
+        }
+
         // 每游戏数据目录的注入必须发生在 `Process.run()` **之前**：mkxp-z 只在 Config::read
         // 读一次 cwd 下的 mkxp.json，进程起来之后再写等于没写。
         let preparation = MKXPZGameConfig.prepare(
             gameRoot: gameRoot,
             gameHash: gameHash,
-            stateRoot: paths.root
+            stateRoot: paths.root,
+            hookScript: bridge == nil ? nil : hookScript
         )
+        if preparation.overlay == nil {
+            // 配置没写进去 → hook 也不会被加载。桥立刻收掉，不占端口。
+            bridge?.stop()
+            bridge = nil
+            bridgePort = nil
+        }
         if let note = preparation.note {
             log?.warn("GameLauncher", "mkxp.json 未注入", ["reason": note])
             // `--play-native` 没有 SessionLog，失败原因只能走系统日志；静默失败等于"隔离悄悄没生效"。
@@ -803,8 +841,17 @@ actor GameLauncher {
             "cwd": gameRoot.path,
             "gameHash": gameHash,
             "pref": MKXPZGameConfig.applicationName(gameHash: gameHash),
-            "configInjected": preparation.overlay == nil ? "0" : "1"
+            "configInjected": preparation.overlay == nil ? "0" : "1",
+            "rgssPort": bridgePort.map { String($0) } ?? "",
+            "hookInjected": (bridge != nil && hookScript != nil) ? "1" : "0"
         ])
+
+        // 端口只走环境变量：hook 的 port 读 MOCHI_RGSS_PORT，缺省才回落 47123。
+        // 不写进 mkxp.json —— 那样每个游戏目录都会多一个会过期的端口。
+        var childEnvironment: [String: String] = [:]
+        if let bridgePort = bridgePort {
+            childEnvironment["MOCHI_RGSS_PORT"] = String(bridgePort)
+        }
 
         let process: Process
         do {
@@ -812,13 +859,15 @@ actor GameLauncher {
                 executable: executable,
                 arguments: [],
                 workingDirectory: gameRoot,
-                logURL: logURL
+                logURL: logURL,
+                environment: childEnvironment
             ).process
         } catch {
             // 进程没起来：覆盖必须当场还原，否则用户的 mkxp.json 会一直带着我们的两个键。
             if let overlay = preparation.overlay {
                 _ = MKXPZGameConfig.restore(overlay)
             }
+            bridge?.stop()
             throw MochiBoxError(
                 code: .runtimeNotExecutable,
                 message: "内置 mkxp-z 运行时启动失败：\(error.localizedDescription)",
@@ -830,6 +879,9 @@ actor GameLauncher {
         ChildProcessRegistry.shared.register(process.processIdentifier)
         if let overlay = preparation.overlay {
             mkxpOverlays[process.processIdentifier] = overlay
+        }
+        if let bridge = bridge {
+            rgssBridges[process.processIdentifier] = bridge
         }
         let handle = LaunchHandle(
             pid: process.processIdentifier,
@@ -1184,6 +1236,14 @@ actor GameLauncher {
         usedPorts.remove(handle.port)
         ChildProcessRegistry.shared.unregister(handle.pid)
         restoreMKXPOverlay(pid: handle.pid)
+        stopRGSSBridge(pid: handle.pid)
+    }
+
+    /// 关掉这个 pid 的 RGSS 文本桥（没登记过就是空操作）。
+    /// 位置与 mkxp.json 还原相同：进程已经退出，关监听不会打断它。
+    private func stopRGSSBridge(pid: Int32) {
+        guard let bridge = rgssBridges.removeValue(forKey: pid) else { return }
+        bridge.stop()
     }
 
     /// 还原 mkxp-z 的 `mkxp.json` 覆盖（没登记过就是空操作）。

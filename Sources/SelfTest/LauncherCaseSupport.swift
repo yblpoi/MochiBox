@@ -616,8 +616,9 @@ extension SelfTestRunner {
             },
             SelfTestCase(group: "F", name: "mkxpz_pref_config_merge_and_restore") { context in
                 // 用户自己的 mkxp.json：注释、尾逗号、同名字段全在。合并后必须
-                //   · 我们的两个键排在**用户键之前**（json5pp 用 std::map::emplace，先到先得）；
-                //   · 用户的键与注释一个不丢；
+                //   · 用户同名的 dataPathApp 被删掉（实测 json5pp 重复键后出现的赢，
+                //     留着会把我们注入的值顶掉）；
+                //   · 用户的其它键与注释一个不丢；
                 //   · 退出后逐字节还原。
                 let root = try directory(context, "f_mkxpz_pref_merge")
                 let stateRoot = try directory(context, "f_mkxpz_pref_merge_state")
@@ -641,12 +642,11 @@ extension SelfTestRunner {
                 }
 
                 let merged = try String(contentsOf: configURL, encoding: .utf8)
-                guard let ours = merged.range(of: "\"dataPathApp\": \"mkxpz-"),
-                      let theirs = merged.range(of: "\"dataPathApp\": \"my-own-dir\"") else {
+                guard merged.range(of: "\"dataPathApp\": \"mkxpz-") != nil else {
                     throw SelfTestFailure(message: "合并结果缺少 dataPathApp，实际：\(merged)")
                 }
-                try expect(ours.lowerBound < theirs.lowerBound,
-                           "我们的 dataPathApp 必须排在用户的前面（先到先得），实际：\(merged)")
+                try expect(!merged.contains("\"dataPathApp\": \"my-own-dir\""),
+                           "用户同名的 dataPathApp 必须被删掉，实际：\(merged)")
                 try expect(merged.contains("// 用户自己的配置"), "注释必须原样保留，实际：\(merged)")
                 try expect(merged.contains("\"winResizable\": false"), "用户其它键必须保留，实际：\(merged)")
 

@@ -25,8 +25,10 @@
 //
 //  合并而不是覆盖：
 //    · 用户自己的 mkxp.json（RTP / patches / 分辨率…）必须继续生效；
-//    · 我们的两个键插在**第一个 `{` 之后**，因为 json5pp 用 std::map::emplace 存键，
-//      **先出现的赢** —— 追加到末尾会被用户自己的 dataPathApp 顶掉。
+//    · 我们的键插在**第一个 `{` 之后**（空对象也不留尾逗号）；
+//    · 用户已有的同名键（preloadScript / dataPathOrg / dataPathApp）先删掉：
+//      实测 json5pp 对重复键是**后出现的赢**，只插到最前面会被用户的同名键顶掉。
+//      用户的 preloadScript 数组会被并进我们的数组，hook 排在最后。
 //
 
 import Foundation
@@ -65,14 +67,35 @@ enum MKXPZGameConfig {
         let note: String?
     }
 
+    /// 随包分发的 RGSS 文本通道 hook。`nil` = 这个构建里没有它（例如从源码直接跑
+    /// `build/MochiBox`）。调用方**必须**在 nil 时不注入 preloadScript：mkxp.json 里
+    /// 指向不存在的脚本会让 mkxp-z 在启动阶段报错，游戏根本进不去。
+    static func bundledHookScript(bundle: Bundle = .main) -> URL? {
+        guard let resources = bundle.resourceURL else { return nil }
+        let url = resources
+            .appendingPathComponent("rgss", isDirectory: true)
+            .appendingPathComponent("mochi_rgss_hook.rb")
+        guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
+        return url
+    }
+
     // MARK: - 注入
 
-    /// 在 `<gameRoot>/mkxp.json` 里注入 dataPathOrg/dataPathApp 并返回还原现场。
+    /// 在 `<gameRoot>/mkxp.json` 里注入 dataPathOrg/dataPathApp（可选 preloadScript）并返回还原现场。
     ///
     /// 失败一律**不阻断启动**（返回 overlay=nil + note）：只读介质 / 只读目录里的游戏
     /// 本来就能跑 mkxp-z，为了"隔离设置目录"把游戏挡在门外是本末倒置。
     /// 但失败必须留痕 —— 调用方把 note 写进会话日志。
-    static func prepare(gameRoot: URL, gameHash: String, stateRoot: URL) -> Preparation {
+    ///
+    /// `hookScript` 非空时一并注入 `preloadScript`，值是脚本的**绝对路径**：
+    /// mkxp-z 用 `fopen(path)` 直接读它，相对路径的基准是进程 cwd（游戏根目录）。
+    /// 绝对路径不依赖 cwd，也不用把脚本复制进用户的游戏目录。
+    static func prepare(
+        gameRoot: URL,
+        gameHash: String,
+        stateRoot: URL,
+        hookScript: URL? = nil
+    ) -> Preparation {
         let manager = FileManager.default
         let configURL = gameRoot.appendingPathComponent(fileName)
         let stateDirectory = stateRoot
@@ -107,7 +130,8 @@ enum MKXPZGameConfig {
         guard let mergedText = merge(
             text: text,
             org: organizationName,
-            app: applicationName(gameHash: gameHash)
+            app: applicationName(gameHash: gameHash),
+            hookScript: hookScript
         ) else {
             return Preparation(overlay: nil, note: "\(configURL.path) 的顶层不是 JSON 对象，无法安全合并，本次不注入 dataPathApp/dataPathOrg")
         }
@@ -218,24 +242,303 @@ enum MKXPZGameConfig {
 
     // MARK: - 合并（JSON5 文本层）
 
-    /// 在顶层对象的第一个 `{` 之后插入我们的两个键。
+    /// 在顶层对象的第一个 `{` 之后插入我们的键（preloadScript 可选，排在 dataPath 之前）。
     ///
-    /// 只做**这一件事**：不解析、不重排、不删除用户的任何内容（注释、尾逗号、单引号全留着）。
+    /// 只做**这一件事**：不解析、不重排、不删除用户其它键（注释、尾逗号、单引号全留着）。
     /// 顶层不是对象（数组 / 纯标量）时返回 nil —— 那时的文件 mkxp-z 本来就会当空配置，
     /// 我们也不去改一个看不懂的文件。
-    static func merge(text: String, org: String, app: String) -> String? {
+    ///
+    /// **同名键必须先删掉再写**：mkxp-z 的 json5pp 对重复键的取舍实测是**后出现的赢**
+    ///（VX 工程里用户自己的 preloadScript 排在后面，把我们的顶掉了）。只把我们的键插到
+    /// 最前面会在数据目录上"看似生效"、在 preloadScript 上悄悄失效。所以这里做文本层合并：
+    ///   · 删掉用户顶层的 preloadScript / dataPathOrg / dataPathApp；
+    ///   · 用户的 preloadScript 数组按字符串解析，和我们的 hook 合成一个数组，
+    ///     **hook 排在最后**（同名方法的 alias 由我们最后拿，保证 hook 一定是外层）；
+    ///   · 其余键、注释、尾逗号原样保留。
+    static func merge(
+        text: String,
+        org: String,
+        app: String,
+        hookScript: URL? = nil
+    ) -> String? {
         let bytes = Array(text.utf8)
         guard let brace = firstStructuralBrace(bytes) else { return nil }
-        // 空对象（`{}` / 只有注释）不需要尾逗号 —— 空文件时写出来的是干净的两行，
-        // 用户在游戏目录里瞄一眼也不会以为是自己写坏了。
-        let emptyObject = nextSignificantByte(bytes, from: brace + 1) == 0x7D   // '}'
+        guard let entries = parseTopLevelEntries(bytes, brace: brace) else { return nil }
+
+        let overridden: Set<String> = ["preloadScript", "dataPathOrg", "dataPathApp"]
+        // 重复的 preloadScript 取最后一份 —— 与实测的"后出现的赢"同口径。
+        var userPreload: [String] = []
+        for entry in entries where entry.key == "preloadScript" {
+            if let strings = arrayStrings(bytes, entry: entry) {
+                userPreload = strings
+            }
+        }
+
+        var remaining = bytes
+        let removals = entries.compactMap { entry -> Range<Int>? in
+            guard overridden.contains(entry.key) else { return nil }
+            if let comma = entry.commaAfter {
+                return entry.keyStart..<(comma + 1)
+            }
+            return entry.keyStart..<entry.valueEnd
+        }.sorted { $0.lowerBound > $1.lowerBound }
+        for range in removals {
+            remaining.removeSubrange(range)
+        }
+
+        let emptyObject = entries.allSatisfy { overridden.contains($0.key) }
         let tail = emptyObject ? "" : ","
-        let insertion = "\n    \"dataPathOrg\": \(quoted(org)),\n    \"dataPathApp\": \(quoted(app))\(tail)"
+        var lines: [String] = []
+        if let hookScript = hookScript {
+            var elements = userPreload
+            elements.append(hookScript.path)
+            lines.append("\"preloadScript\": [" + elements.map(quoted).joined(separator: ", ") + "]")
+        }
+        lines.append("\"dataPathOrg\": \(quoted(org))")
+        lines.append("\"dataPathApp\": \(quoted(app))")
+        let body = lines.map { "    " + $0 }.joined(separator: ",\n")
+        let insertion = "\n" + body + tail
         var out = [UInt8]()
-        out.reserveCapacity(bytes.count + insertion.utf8.count)
-        out.append(contentsOf: bytes[0...brace])
+        out.reserveCapacity(remaining.count + insertion.utf8.count)
+        out.append(contentsOf: remaining[0...brace])
         out.append(contentsOf: Array(insertion.utf8))
-        out.append(contentsOf: bytes[(brace + 1)...])
+        out.append(contentsOf: remaining[(brace + 1)...])
+        return String(bytes: out, encoding: .utf8)
+    }
+
+    // MARK: - 顶层键的文本层扫描（只认对象一层，够处理 mkxp.json）
+
+    private struct TopLevelEntry {
+        let key: String
+        let keyStart: Int
+        let valueStart: Int
+        let valueEnd: Int
+        /// 值后面那个顶层逗号的位置（没有就是 nil）。
+        let commaAfter: Int?
+    }
+
+    private static func parseTopLevelEntries(_ bytes: [UInt8], brace: Int) -> [TopLevelEntry]? {
+        var entries: [TopLevelEntry] = []
+        var index = skipTrivia(bytes, brace + 1)
+
+        while index < bytes.count {
+            index = skipTrivia(bytes, index)
+            guard index < bytes.count else { return nil }
+            if bytes[index] == 0x7D { return entries }   // '}' 顶层对象结束
+
+            let keyStart = index
+            let key: String
+            if bytes[index] == 0x22 || bytes[index] == 0x27 {   // 双/单引号键
+                guard let end = scanQuoted(bytes, index),
+                      let decoded = unescapeJSON5String(bytes, from: index, to: end) else { return nil }
+                key = decoded
+                index = end
+            } else {
+                let start = index
+                while index < bytes.count, !isKeyDelimiter(bytes[index]) { index += 1 }
+                guard index > start else { return nil }
+                key = String(decoding: bytes[start..<index], as: UTF8.self)
+            }
+
+            index = skipTrivia(bytes, index)
+            guard index < bytes.count, bytes[index] == 0x3A else { return nil }   // ':'
+            index = skipTrivia(bytes, index + 1)
+            let valueStart = index
+            guard let valueEnd = scanValueEnd(bytes, index), valueEnd > valueStart else { return nil }
+
+            var commaAfter: Int?
+            var after = skipTrivia(bytes, valueEnd)
+            if after < bytes.count, bytes[after] == 0x2C {   // ','
+                commaAfter = after
+                after += 1
+            }
+            entries.append(TopLevelEntry(
+                key: key,
+                keyStart: keyStart,
+                valueStart: valueStart,
+                valueEnd: valueEnd,
+                commaAfter: commaAfter
+            ))
+            index = after
+        }
+        return nil
+    }
+
+    private static func isKeyDelimiter(_ byte: UInt8) -> Bool {
+        return byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+            || byte == 0x3A || byte == 0x2C || byte == 0x7D
+    }
+
+    /// 从 start 起跳空白与注释。
+    private static func skipTrivia(_ bytes: [UInt8], _ start: Int) -> Int {
+        var index = start
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D {
+                index += 1
+                continue
+            }
+            if byte == 0x2F, index + 1 < bytes.count {
+                if bytes[index + 1] == 0x2F {
+                    while index < bytes.count && bytes[index] != 0x0A { index += 1 }
+                    continue
+                }
+                if bytes[index + 1] == 0x2A {
+                    index += 2
+                    while index + 1 < bytes.count,
+                          !(bytes[index] == 0x2A && bytes[index + 1] == 0x2F) {
+                        index += 1
+                    }
+                    index = min(index + 2, bytes.count)
+                    continue
+                }
+            }
+            return index
+        }
+        return index
+    }
+
+    /// index 指向开引号；返回闭引号之后的位置。
+    private static func scanQuoted(_ bytes: [UInt8], _ index: Int) -> Int? {
+        guard index < bytes.count else { return nil }
+        let quote = bytes[index]
+        guard quote == 0x22 || quote == 0x27 else { return nil }
+        var cursor = index + 1
+        while cursor < bytes.count {
+            if bytes[cursor] == 0x5C {   // 反斜杠：跳过被转义的字节
+                cursor += 2
+                continue
+            }
+            if bytes[cursor] == quote { return cursor + 1 }
+            cursor += 1
+        }
+        return nil
+    }
+
+    /// 返回值的结束位置。对象/数组返回到闭合括号之后；标量返回到逗号或父对象 '}'。
+    private static func scanValueEnd(_ bytes: [UInt8], _ start: Int) -> Int? {
+        var index = start
+        var depth = 0
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 0x22 || byte == 0x27 {
+                guard let end = scanQuoted(bytes, index) else { return nil }
+                index = end
+                continue
+            }
+            if byte == 0x2F, index + 1 < bytes.count {
+                if bytes[index + 1] == 0x2F {
+                    while index < bytes.count && bytes[index] != 0x0A { index += 1 }
+                    continue
+                }
+                if bytes[index + 1] == 0x2A {
+                    index += 2
+                    while index + 1 < bytes.count,
+                          !(bytes[index] == 0x2A && bytes[index + 1] == 0x2F) {
+                        index += 1
+                    }
+                    index = min(index + 2, bytes.count)
+                    continue
+                }
+            }
+            if byte == 0x7B || byte == 0x5B {   // '{' '['
+                depth += 1
+                index += 1
+                continue
+            }
+            if byte == 0x7D || byte == 0x5D {   // '}' ']'
+                if depth == 0 { return index }
+                depth -= 1
+                index += 1
+                if depth == 0 { return index }
+                continue
+            }
+            if depth == 0, byte == 0x2C {   // ','
+                return index
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    /// 把 preloadScript 的数组值解析成字符串列表。非数组/非字符串返回 nil。
+    private static func arrayStrings(_ bytes: [UInt8], entry: TopLevelEntry) -> [String]? {
+        guard entry.valueStart < bytes.count, bytes[entry.valueStart] == 0x5B else { return nil }
+        var index = entry.valueStart + 1
+        var result: [String] = []
+
+        while index < bytes.count {
+            index = skipTrivia(bytes, index)
+            guard index < bytes.count else { return nil }
+            if bytes[index] == 0x5D { return result }   // ']'
+            guard bytes[index] == 0x22 || bytes[index] == 0x27 else { return nil }
+            guard let end = scanQuoted(bytes, index),
+                  let decoded = unescapeJSON5String(bytes, from: index, to: end) else { return nil }
+            result.append(decoded)
+            index = skipTrivia(bytes, end)
+            guard index < bytes.count else { return nil }
+            if bytes[index] == 0x2C {
+                index += 1
+                continue
+            }
+            if bytes[index] == 0x5D { return result }
+            return nil
+        }
+        return nil
+    }
+
+    /// 只覆盖 mkxp.json 里会出现的转义（路径 / 引号 / 反斜杠）。
+    private static func unescapeJSON5String(_ bytes: [UInt8], from start: Int, to end: Int) -> String? {
+        guard end >= start + 2, end <= bytes.count else { return nil }
+        var out = [UInt8]()
+        var index = start + 1
+        let limit = end - 1
+
+        while index < limit {
+            let byte = bytes[index]
+            if byte != 0x5C {
+                out.append(byte)
+                index += 1
+                continue
+            }
+            index += 1
+            guard index < limit else { return nil }
+            let escaped = bytes[index]
+            switch escaped {
+            case 0x22: out.append(0x22); index += 1
+            case 0x27: out.append(0x27); index += 1
+            case 0x5C: out.append(0x5C); index += 1
+            case 0x2F: out.append(0x2F); index += 1
+            case 0x62: out.append(0x08); index += 1
+            case 0x66: out.append(0x0C); index += 1
+            case 0x6E: out.append(0x0A); index += 1
+            case 0x72: out.append(0x0D); index += 1
+            case 0x74: out.append(0x09); index += 1
+            case 0x76: out.append(0x0B); index += 1
+            case 0x30: out.append(0x00); index += 1
+            case 0x78:   // \xHH
+                guard index + 2 < limit,
+                      let text = String(bytes: bytes[(index + 1)...(index + 2)], encoding: .utf8),
+                      let value = UInt8(text, radix: 16) else { return nil }
+                out.append(value)
+                index += 3
+            case 0x75:   // \uHHHH
+                guard index + 4 < limit,
+                      let text = String(bytes: bytes[(index + 1)...(index + 4)], encoding: .utf8),
+                      let raw = UInt32(text, radix: 16),
+                      let scalar = UnicodeScalar(raw) else { return nil }
+                out.append(contentsOf: String(scalar).utf8)
+                index += 5
+            case 0x0A: index += 1
+            case 0x0D:
+                index += 1
+                if index < limit && bytes[index] == 0x0A { index += 1 }
+            default:
+                // JSON5 允许转义任意字符（identity escape）。
+                out.append(escaped)
+                index += 1
+            }
+        }
         return String(bytes: out, encoding: .utf8)
     }
 

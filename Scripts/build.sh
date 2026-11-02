@@ -176,6 +176,12 @@ cp "$BIN" "$APP/Contents/MacOS/MochiBox"
 chmod +x "$APP/Contents/MacOS/MochiBox"
 cp "$ROOT/Scripts/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/agent_mvmz.js" "$APP/Contents/Resources/agent_mvmz.js"
+# RGSS 文本通道 hook：GameLauncher 把它的**绝对路径**写进 mkxp.json 的 preloadScript。
+# 必须放在 Contents/Resources/rgss/ 下（Bundle.main.resourceURL 的固定位置）。
+# 缺文件时 GameLauncher 会跳过注入、游戏按原文跑 —— 所以这里 cp 失败要当场炸，
+# 不能出一个"看起来构建成功、XP/VX 却永远不翻译"的包。
+mkdir -p "$APP/Contents/Resources/rgss"
+cp "$ROOT/Resources/rgss/mochi_rgss_hook.rb" "$APP/Contents/Resources/rgss/mochi_rgss_hook.rb"
 cp "$ROOT/Design/mochibox-icon/Mochibox.icns" "$APP/Contents/Resources/Mochibox.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
