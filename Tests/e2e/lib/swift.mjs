@@ -42,6 +42,7 @@ export const SOURCES = {
   lcf: () => [
     path.join(ROOT, 'Sources/Adapters/LCF/LCFError.swift'),
     path.join(ROOT, 'Sources/Adapters/LCF/LCFTextCodec.swift'),
+    path.join(ROOT, 'Sources/Adapters/LCF/LCFCommonChars.swift'),
     path.join(ROOT, 'Sources/Adapters/LCF/LCFDatabase.swift'),
     path.join(ROOT, 'Sources/Adapters/LCF/LCFMapFile.swift'),
     path.join(ROOT, 'Sources/Adapters/LCF/LCFMapTree.swift'),

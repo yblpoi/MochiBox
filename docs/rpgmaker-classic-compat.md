@@ -27,7 +27,7 @@
 
 | 版本 | 工程文件 | 数据文件 | 加密包 | 原始运行时 | 文本所在层 | 编码 |
 |---|---|---|---|---|---|---|
-| 2000 | **无** | `RPG_RT.ldb`、`RPG_RT.lmt`、`MapXXXX.lmu`、`SaveXX.lsd` | 无 | `RPG_RT.exe`（Win32 + DirectX） | LDB 的角色/技能/物品/敌人段与术语段；LMU 的事件指令 | ANSI 代码页：日文 Shift-JIS，简中汉化常为 GBK |
+| 2000 | **无** | `RPG_RT.ldb`、`RPG_RT.lmt`、`MapXXXX.lmu`、`SaveXX.lsd` | 无 | `RPG_RT.exe`（Win32 + DirectX） | LDB 的角色/技能/物品/敌人段与术语段；LMU 的事件指令 | ANSI 代码页：日文 Shift-JIS，简中汉化常为 GBK，繁中汉化常为 Big5 |
 | 2003 | **无**（同 2000） | 同上，另有仅 2003 的 BattleCommands / Classes / BattlerAnimations 段 | 无 | `RPG_RT.exe`（Win32 + DirectX） | 同上 | 同上 |
 | XP | `.rxproj` | `Data/*.rxdata` | `.rgssad` | `Game.exe` + `RGSS` DLL（Ruby 1.8.1） | `RPG::Actor#name` 等字段、`RPG::EventCommand#parameters` | 无 encoding ivar |
 | VX | `.rvproj` | `Data/*.rvdata` | `.rgss2a` | `Game.exe` + `RGSS2` DLL（Ruby 1.8.1） | 同上 | 无 encoding ivar |
@@ -92,6 +92,12 @@ EasyRPG Player 本体依赖太多（SDL2 等），不做静态内链，只能内
 ```
 
 shim 是必需品而非优化：Swift 的 clang importer 按 C 解析头文件，桥接头里出现 `class` 直接报 `unknown type name 'class'`。`.cc` 也不能随 `swiftc` 一起编（`-Xcc -I` 传不进去），必须 `clang++ -c` 先出 `.o`；shim 用 STL 时补 `-lc++`。
+
+**编码判定（候选集含 Big5）**：LDB 里存的是裸字节，文件头不标编码，而且同一份 .ldb 里日文原文与汉化文本混排是常态（实测 Chi-Hsin/reversestone：3004 条非空字段里 2528 条繁体中文、476 条仍是日文），所以判定只能**逐字段**做。候选集是 Shift-JIS / GB18030 / **Big5** / UTF-8：先看两条确定性信号（合法 UTF-8 且解出 CJK → UTF-8；合法 Shift-JIS 且含全角假名 → Shift-JIS），再按字符类打分；最后——**只在 GB18030 已经胜出时**——让 Big5 用"常用字命中率"挑战一次。
+
+为什么最后一步必须换成语义判据：GB18030 与 Big5 的字节域几乎完全重叠（Big5 首 `0xA1–0xF9`、尾 `0x40–0x7E`/`0xA1–0xFE` 全部落在 GB18030 的合法范围内），**每个合法 Big5 字节串都是合法 GB18030**，纯字节范围判不出来；两者解出来的又都是汉字，按字符类的"可读性"打分给它们同分，而"同分取先试的"意味着 Big5 只要排在候选里就永远输。能分开它们的只有"像不像人话"：正确编码解出常用字，错误编码解出生僻字或 PUA（实测 2528 条里 1511 条按 GB18030 解出 PUA）。所以两张常用字表（各约 1590 字，简体/繁体同源同序）加一个扣分项（PUA / 半角片假名 / 西里尔），分数高者胜。实现在 `Sources/Adapters/LCF/LCFTextCodec.swift`（判定）与 `LCFCommonChars.swift`（字表）。
+
+局限与覆盖：真机验证过两份繁体工程（2026-11-02）—— Chi-Hsin/reversestone 2419/2528 判为 Big5、RenaWevin/MyFireDragon 315/320；剩下的是两种解码都像人话的短名（104 条平局，如 龐斯/胑吹），要靠语言模型才能再分。**GBK 仍只有合成样本**，别对外宣称已覆盖简体汉化版。
 
 **编码策略**：`LDB_Reader::Load(path, "")` 的空串 = **原始字节直通**，不做转码。无 ICU 时 `DetectEncodings()` 硬编码返回 `{"windows-1252"}`，所以**只能传 ""**；转码 100% 落在 Swift 侧（`String.Encoding.shiftJIS` 与 `CFStringEncodings.GB_18030_2000`）。直通与转码是同一条路径的两个模式：`src/encoder.cpp:65` 首行 `if (_encoding.empty()) return;`，一个字节都不转。实测 GBK `d6d0cec4`、CP932 `836583588367` 往返逐字节不变，ICU=ON 与 OFF 对 `Load(path, "")` 输出一致。
 

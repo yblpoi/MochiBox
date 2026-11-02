@@ -3,7 +3,7 @@
  *
  * 被测源码：Sources/Adapters/LCF/{LCFDatabase,LCFTextCodec,LCFError}.swift
  *           + Sources/Adapters/LCF/lcf_shim.cpp（C shim，链 liblcf 静态库）
- * 断言正文：lcf_probe.swift（28 条，L1–L25 + L26–L29），本文件负责：
+ * 断言正文：lcf_probe.swift（60 条，编号清单见该文件头），本文件负责：
  *   1) 确认 vendor 里的 liblcf 静态库在（不在就是这层没构建，直接报怎么补）；
  *   2) 用 clang++ 把 shim 编成 .o，再把 .o 与 liblcf.a 一起交给 swiftc；
  *   3) 现场造两个合成库（lcf_synth.cpp），用完就删 —— 它们是测试构造物，不入库；

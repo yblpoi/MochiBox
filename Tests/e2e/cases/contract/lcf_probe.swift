@@ -11,7 +11,7 @@
 //  数据：    Fixtures/rm2000/RPG_RT.ldb、Fixtures/rm2003/RPG_RT.ldb
 //            （EasyRPG/TestGame 原始数据，GPL-3.0，见 Fixtures/README.md）
 //
-//  断言清单（L1–L25）：
+//  断言清单（编号即清单顺序，L17b–L17g 是 Big5 判据的回归）：
 //   L1  rm2000 读到 8 个角色（结构真读进来了，不是空壳）
 //   L2  rm2000 读到 88 个道具
 //   L3  rm2000 反射摊平出 2882 个文本字段
@@ -29,6 +29,10 @@
 //   L15 UTF-8 的「あ」判成 UTF-8（不能被 Shift-JIS 抢走）
 //   L16 UTF-8 的中文长句判成 UTF-8
 //   L17 GBK 的「药水」判成 GB18030 —— 旧实现会判成 UTF-8 并解出「ҩˮ」
+//   L17b–L17e Big5 真实工程字节各判成 Big5 并解对（C2C4A74A=薩克 / AA46AA46=東東 /
+//              AA4CAA4C=林林 / AA4CA5ACADF4=林布哥）—— 旧判据把第一条解成「履」
+//   L17f 两张常用字表里的每个字都能被对应编码表示（字表自检）
+//   L17g rm2000/rm2003 全部非空字段仍判 Shift-JIS（加 Big5 没动摇日文判据）
 //   L18 纯 ASCII 按日文原版口径判成 Shift-JIS
 //   L19 按路径把 GB18030 译文写进 items[0].name 并保存成功
 //   L20 重新打开，该字段字节与写入的完全一致
@@ -78,6 +82,23 @@ struct LCFProbe {
 
     static func hex(_ data: Data) -> String {
         data.map { String(format: "%02x", $0) }.joined(separator: " ")
+    }
+
+    /// 把 "c2c4a74a" 这样的十六进制串还原成字节；奇数长度或缺字符时返回空 Data
+    /// （断言会因此失败，不会静默当成合法输入）。
+    static func data(hex string: String) -> Data {
+        let digits = Array(string.utf8)
+        guard digits.count % 2 == 0 else { return Data() }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(digits.count / 2)
+        var index = 0
+        while index < digits.count {
+            let pair = String(bytes: digits[index..<index + 2], encoding: .utf8) ?? ""
+            guard let byte = UInt8(pair, radix: 16) else { return Data() }
+            bytes.append(byte)
+            index += 2
+        }
+        return Data(bytes)
     }
 
     /// 诊断信息，不计入断言数（TAP 消费者只认 ok/not ok）。
@@ -219,6 +240,51 @@ struct LCFProbe {
         let ascii = Data("Potion".utf8)
         check("L18", "纯 ASCII 按日文原版口径判成 Shift-JIS", LCFTextCodec.detect(ascii) == .shiftJIS,
               "got=\(LCFTextCodec.detect(ascii).rawValue)")
+
+        // ---- Big5：真实繁体工程的字节串（字节是真的，文件不入库）----
+        // 旧判据的候选集只有 utf8 / shiftJIS / gb18030，而**每个合法 Big5 字节串都是
+        // 合法 GB18030**（两者字节域重叠），所以繁体文本一律被 GB18030 抢走。
+        // 下面几条钉的是真实工程里的字节，不是手工构造：
+        //   Chi-Hsin/reversestone  actors[0].name   = C2 C4 A7 4A        →「薩克」
+        //   RenaWevin/MyFireDragon actors[0].name   = AA 46 AA 46        →「東東」
+        //   RenaWevin/MyFireDragon actors[1].name   = AA 4C A5 AC AD F4  →「林布哥」
+        // AA 46 是「東」不是「林」—— 两者只差尾字节（「林」= AA 4C），拿来当反例正好：
+        // 只按"落在 Big5 常用字表"判断是不够的，必须逐字命中。
+        func big5Case(_ id: String, _ hex: String, _ want: String) {
+            let raw = data(hex: hex)
+            let detected = LCFTextCodec.detect(raw)
+            let decoded = try? LCFTextCodec.decode(raw)
+            check(id, "Big5 的「\(want)」判成 Big5 并解对（真实工程字节 \(hex)）",
+                  detected == .big5 && decoded?.text == want,
+                  "bytes=\(hex) encoding=\(detected.rawValue) text=\(decoded?.text ?? "nil")")
+        }
+        big5Case("L17b", "c2c4a74a", "薩克")
+        big5Case("L17c", "aa46aa46", "東東")
+        big5Case("L17d", "aa4caa4c", "林林")
+        big5Case("L17e", "aa4ca5acadf4", "林布哥")
+
+        // 字表自检：每个字都必须能被对应编码表示。混进编不出来的字不会报错，只会静默稀释
+        // 命中率、让判据变钝 —— 手改字表时最容易犯这个错。
+        var unencodable: [String] = []
+        for (name, scalars, encoding) in [("GB18030", LCFCommonChars.gb18030, LCFTextCodec.Encoding.gb18030),
+                                          ("Big5", LCFCommonChars.big5, .big5)] {
+            for value in scalars.sorted() {
+                guard let scalar = Unicode.Scalar(value) else { unencodable.append("\(name) U+\(String(value, radix: 16))"); continue }
+                if (try? LCFTextCodec.encode(String(scalar), as: encoding)) == nil {
+                    unencodable.append("\(name) \(scalar)")
+                }
+            }
+        }
+        check("L17f", "两张常用字表共 \(LCFCommonChars.gb18030.count + LCFCommonChars.big5.count) 个字都能被对应编码表示",
+              unencodable.isEmpty, "编不出：\(unencodable.prefix(5))")
+
+        // 反向守卫：Big5 的加时赛只在"GB18030 已经胜出"这一支上触发，所以日文原版库里
+        // 一条都不该被改判。这条同时钉住"加 Big5 不能动摇 Shift-JIS 判据"。
+        let jpFields = (db.allStrings() + db3.allStrings()).filter { !$0.raw.isEmpty }
+        let stolen = jpFields.filter { LCFTextCodec.detect($0.raw) != .shiftJIS }
+        check("L17g", "rm2000/rm2003 的 \(jpFields.count) 条非空字段仍全判 Shift-JIS（Big5 没抢走日文）",
+              stolen.isEmpty,
+              "被改判 \(stolen.count) 条，例：\(stolen.prefix(3).map { $0.path + "=" + LCFTextCodec.detect($0.raw).rawValue })")
 
         // ---- 写回（在副本上做，fixture 只读）----
         let work = FileManager.default.temporaryDirectory
