@@ -19,8 +19,61 @@ extension String {
 
 // MARK: - HTTP 封装
 
+/// `Retry-After`（RFC 9110 §10.2.3）解析：delta-seconds 或 HTTP-date。
+///
+/// 两种格式都必须支持：DeepSeek / OpenAI 官方多给秒数，反向代理和 CDN 常见 HTTP-date。
+/// 解析失败返回 nil —— 调用方按"没有这个头"处理，继续用固定退避（500/1000/2000ms），
+/// **不要**因为一个坏头把整条通道卡住。
+enum RetryAfter {
+    /// HTTP-date 的三种历史格式，按 RFC 9110 §5.6.7 的优先级依次尝试。
+    /// `DateFormatter` 不是线程安全的，每次解析新建一个（只在 429 路径上走，成本可忽略）。
+    private static let dateFormats = [
+        "EEE, dd MMM yyyy HH:mm:ss zzz",     // IMF-fixdate：Sun, 06 Nov 1994 08:49:37 GMT
+        "EEEE, dd-MMM-yy HH:mm:ss zzz",      // RFC 850：Sunday, 06-Nov-94 08:49:37 GMT
+        "EEE MMM d HH:mm:ss yyyy"            // asctime：Sun Nov  6 08:49:37 1994
+    ]
+
+    /// 返回值已截断到 `K.retryAfterCapMs`。`raw` 为 nil / 空 / 非法时返回 nil。
+    static func parse(_ raw: String?, now: Date = Date()) -> Int? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        if let seconds = Int(trimmed) {
+            return clamp(seconds * 1000)
+        }
+        guard let date = httpDate(trimmed) else { return nil }
+        return clamp(Int(date.timeIntervalSince(now) * 1000))
+    }
+
+    /// 负数（HTTP-date 已过期）按 0 处理；超过上限按上限。
+    static func clamp(_ milliseconds: Int) -> Int {
+        return min(max(0, milliseconds), K.retryAfterCapMs)
+    }
+
+    private static func httpDate(_ text: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        for format in dateFormats {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: text) { return date }
+        }
+        return nil
+    }
+}
+
 /// 薄封装 `URLSession`：JSON POST、超时、状态码分流、响应体截断脱敏。
 struct HTTPPoster: Sendable {
+    /// 一次 POST 的完整结果。
+    ///
+    /// 只返回 (status, body) 时 429 的 `Retry-After` 在响应头里直接丢掉，
+    /// 退避只能按固定表走；头是"服务端明确告诉你等多久"的唯一来源，必须带出来。
+    struct Response: Sendable {
+        var status: Int
+        var body: Data
+        /// 已换算成毫秒并截断；无该头 / 解析失败为 nil。
+        var retryAfterMs: Int?
+    }
+
     let session: URLSession
 
     init(session: URLSession? = nil) {
@@ -35,13 +88,13 @@ struct HTTPPoster: Sendable {
         }
     }
 
-    /// 返回 (HTTP 状态码, 响应体)。网络层错误统一转 `MochiBoxError`。
+    /// 返回状态码 + 响应体 + `Retry-After` 折算的等待时长。网络层错误统一转 `MochiBoxError`。
     func postJSON(
         url: URL,
         headers: [String: String],
         body: Data,
         timeout: TimeInterval
-    ) async throws -> (status: Int, body: Data) {
+    ) async throws -> Response {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = body
@@ -52,8 +105,12 @@ struct HTTPPoster: Sendable {
         }
         do {
             let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            return (status, data)
+            let http = response as? HTTPURLResponse
+            return Response(
+                status: http?.statusCode ?? 0,
+                body: data,
+                retryAfterMs: RetryAfter.parse(http?.value(forHTTPHeaderField: "Retry-After"))
+            )
         } catch let error as URLError {
             throw HTTPPoster.mapURLError(error)
         } catch {
@@ -93,7 +150,8 @@ struct HTTPPoster: Sendable {
     }
 
     /// 状态码 → `MochiBoxError`（六种响应形状均有明确错误码）。
-    static func mapStatus(_ status: Int, body: Data) -> MochiBoxError? {
+    /// - Parameter retryAfterMs: `Retry-After` 折算值（已截断）；只有 429 会消费它。
+    static func mapStatus(_ status: Int, body: Data, retryAfterMs: Int? = nil) -> MochiBoxError? {
         let snippet = String(decoding: body.prefix(K.rawSnippetLimit), as: UTF8.self)
         if status == 200 || status == 201 {
             return nil
@@ -105,7 +163,12 @@ struct HTTPPoster: Sendable {
             return MochiBoxError(code: .quotaExceeded, httpStatus: status, rawSnippet: snippet)
         }
         if status == 429 {
-            return MochiBoxError(code: .rateLimited, httpStatus: status, rawSnippet: snippet)
+            return MochiBoxError(
+                code: .rateLimited,
+                httpStatus: status,
+                rawSnippet: snippet,
+                retryAfterMs: retryAfterMs
+            )
         }
         if status >= 500 {
             return MochiBoxError(
@@ -363,20 +426,24 @@ struct OpenAICompatibleProvider: BatchTranslationProvider {
         }
         let headers = ["Authorization": "Bearer \(apiKey)"]
         let timeout = TimeInterval(request.timeoutMs) / 1000.0
-        var (status, data) = try await poster.postJSON(url: url, headers: headers, body: bodyData, timeout: timeout)
+        var response = try await poster.postJSON(url: url, headers: headers, body: bodyData, timeout: timeout)
         // 400/422 = 后端不认识这个字段（第三方兼容端点常见）。去掉它重发**同一请求**一次：
         // 宁可退回"带思考"的旧行为，也不要因为一个可选开关让整批翻译彻底失败。
-        if (status == 400 || status == 422), let field = reasoningField {
+        if (response.status == 400 || response.status == 422), let field = reasoningField {
             var plain = body
             for key in field.keys { plain.removeValue(forKey: key) }
             if let plainData = try? JSONSerialization.data(withJSONObject: plain, options: []) {
-                (status, data) = try await poster.postJSON(url: url, headers: headers, body: plainData, timeout: timeout)
+                response = try await poster.postJSON(url: url, headers: headers, body: plainData, timeout: timeout)
             }
         }
-        if let error = HTTPPoster.mapStatus(status, body: data) {
+        if let error = HTTPPoster.mapStatus(
+            response.status,
+            body: response.body,
+            retryAfterMs: response.retryAfterMs
+        ) {
             throw error
         }
-        let translated = try OpenAICompatibleProvider.parseContent(data: data, expected: inputs.count)
+        let translated = try OpenAICompatibleProvider.parseContent(data: response.body, expected: inputs.count)
         let latency = Int(Date().timeIntervalSince(started) * 1000)
         var items: [TranslationResultItem] = []
         for (index, item) in request.items.enumerated() {
@@ -562,26 +629,30 @@ struct DeepLProvider: BatchTranslationProvider {
             throw MochiBoxError(code: .badResponse, message: "无法构造请求体")
         }
         let headers = ["Authorization": "DeepL-Auth-Key \(apiKey)"]
-        let (status, data) = try await poster.postJSON(
+        let response = try await poster.postJSON(
             url: url,
             headers: headers,
             body: bodyData,
             timeout: TimeInterval(request.timeoutMs) / 1000.0
         )
-        if let error = HTTPPoster.mapStatus(status, body: data) {
-            if status == 456 {
-                throw MochiBoxError(code: .quotaExceeded, httpStatus: status,
-                                 rawSnippet: String(decoding: data.prefix(K.rawSnippetLimit), as: UTF8.self))
+        if let error = HTTPPoster.mapStatus(
+            response.status,
+            body: response.body,
+            retryAfterMs: response.retryAfterMs
+        ) {
+            if response.status == 456 {
+                throw MochiBoxError(code: .quotaExceeded, httpStatus: response.status,
+                                 rawSnippet: String(decoding: response.body.prefix(K.rawSnippetLimit), as: UTF8.self))
             }
             throw error
         }
-        guard let object = try? JSONSerialization.jsonObject(with: data, options: []),
+        guard let object = try? JSONSerialization.jsonObject(with: response.body, options: []),
               let root = object as? [String: Any],
               let translations = root["translations"] as? [[String: Any]] else {
             throw MochiBoxError(
                 code: .badResponse,
                 message: "响应缺少 translations",
-                rawSnippet: String(decoding: data.prefix(K.rawSnippetLimit), as: UTF8.self)
+                rawSnippet: String(decoding: response.body.prefix(K.rawSnippetLimit), as: UTF8.self)
             )
         }
         let latency = Int(Date().timeIntervalSince(started) * 1000)

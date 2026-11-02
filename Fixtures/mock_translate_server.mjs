@@ -7,11 +7,14 @@
  * 缓存命中，也可能是又翻了一遍。
  *
  * 用法：
- *   node Fixtures/mock_translate_server.mjs --port <p> --mode <ok|401|429|500|nonjson|slow> --record <dir>
+ *   node Fixtures/mock_translate_server.mjs --port <p> --mode <ok|401|429|429-retry|500|nonjson|slow> --record <dir>
  *
  *   --port 0        由内核选端口，启动行里打印实际端口（测试用这个形态，避免 TOCTOU）
- *   --record <dir>  每个请求追加一行 {ts,path,status,body} 到 <dir>/requests.jsonl
+ *   --record <dir>  每个请求追加一行 {ts,path,status,retryAfter,body} 到 <dir>/requests.jsonl
  *   --mode slow     故意拖 60s 不响应（模拟后端慢；测试用 --duration 而不是等它）
+ *   --mode 429-retry  前 --fail-count 次（默认 1）回 429 + Retry-After，之后正常。
+ *                     --retry-after <秒>（默认 1）；加 --retry-after-date 改发 HTTP-date。
+ *                     用来验证产品真的按服务端指示等，而不是固定 500ms 退避。
  *
  * 响应形状是标准 chat.completion，choices[0].message.content 是 JSON 字符串数组：
  * 长度 == 请求 items 长度，每项 "译:" + 原文（段内 U+001F 原样保留）。
@@ -24,15 +27,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 function parseArgs(argv) {
-  const options = { port: 0, mode: 'ok', record: '', delayMs: 60_000 };
+  const options = {
+    port: 0, mode: 'ok', record: '', delayMs: 60_000,
+    failCount: 1, retryAfter: 1, retryAfterDate: false
+  };
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
     if (token === '--port' && i + 1 < argv.length) { options.port = Number(argv[++i]); }
     else if (token === '--mode' && i + 1 < argv.length) { options.mode = argv[++i]; }
     else if (token === '--record' && i + 1 < argv.length) { options.record = argv[++i]; }
     else if (token === '--delay-ms' && i + 1 < argv.length) { options.delayMs = Number(argv[++i]); }
+    else if (token === '--fail-count' && i + 1 < argv.length) { options.failCount = Number(argv[++i]); }
+    else if (token === '--retry-after' && i + 1 < argv.length) { options.retryAfter = Number(argv[++i]); }
+    else if (token === '--retry-after-date') { options.retryAfterDate = true; }
     else if (token === '--help' || token === '-h') {
-      console.log('用法: mock_translate_server.mjs --port <p> --mode <ok|401|429|500|nonjson|slow> --record <dir>');
+      console.log('用法: mock_translate_server.mjs --port <p> --mode <ok|401|429|429-retry|500|nonjson|slow> --record <dir>');
       process.exit(0);
     }
   }
@@ -40,9 +49,19 @@ function parseArgs(argv) {
     console.error('error: --port 必须是 0–65535 的整数');
     process.exit(2);
   }
-  if (!['ok', '401', '429', '500', 'nonjson', 'slow'].includes(options.mode)) {
-    console.error('error: --mode 必须是 ok|401|429|500|nonjson|slow');
+  if (!['ok', '401', '429', '429-retry', '500', 'nonjson', 'slow'].includes(options.mode)) {
+    console.error('error: --mode 必须是 ok|401|429|429-retry|500|nonjson|slow');
     process.exit(2);
+  }
+  if (options.mode === '429-retry') {
+    if (!Number.isInteger(options.failCount) || options.failCount < 0) {
+      console.error('error: --fail-count 必须是非负整数');
+      process.exit(2);
+    }
+    if (!Number.isFinite(options.retryAfter) || options.retryAfter < 0) {
+      console.error('error: --retry-after 必须是非负数（秒）');
+      process.exit(2);
+    }
   }
   return options;
 }
@@ -91,9 +110,17 @@ function completionBody(items) {
   });
 }
 
-function respond(res, status, body, contentType) {
-  res.writeHead(status, { 'Content-Type': contentType || 'application/json; charset=utf-8' });
+function respond(res, status, body, contentType, headers) {
+  res.writeHead(status, {
+    'Content-Type': contentType || 'application/json; charset=utf-8',
+    ...(headers || {})
+  });
   res.end(body);
+}
+
+/** HTTP-date 形态的 Retry-After（IMF-fixdate，UTC）。 */
+function retryAfterDate(seconds) {
+  return new Date(Date.now() + seconds * 1000).toUTCString();
 }
 
 const server = http.createServer((req, res) => {
@@ -108,12 +135,33 @@ const server = http.createServer((req, res) => {
     requestCount += 1;
     const items = parseItems(body);
 
-    const finish = (status, payload, contentType) => {
-      record({ ts: Date.now(), path: req.url, status: status, body: body });
-      respond(res, status, payload, contentType);
+    const finish = (status, payload, contentType, headers) => {
+      record({
+        ts: Date.now(),
+        path: req.url,
+        status: status,
+        retryAfter: (headers && headers['Retry-After']) || null,
+        body: body
+      });
+      respond(res, status, payload, contentType, headers);
     };
 
     switch (options.mode) {
+      case '429-retry': {
+        // 前 failCount 次限流，之后恢复。请求计数是全局的：一个进程内多行文本
+        // 会按顺序命中，正好模拟"第一次撞限流、重试成功"的真实形态。
+        if (requestCount <= options.failCount) {
+          finish(
+            429,
+            JSON.stringify({ error: { message: 'mock rate limited', type: 'rate_limit_error' } }),
+            undefined,
+            { 'Retry-After': options.retryAfterDate ? retryAfterDate(options.retryAfter) : String(options.retryAfter) }
+          );
+          return;
+        }
+        finish(200, completionBody(items));
+        return;
+      }
       case '401':
         finish(401, JSON.stringify({ error: { message: 'mock unauthorized', type: 'invalid_request_error' } }));
         return;
@@ -141,6 +189,9 @@ const server = http.createServer((req, res) => {
 server.listen(options.port, '127.0.0.1', () => {
   const actual = server.address().port;
   console.log('[mock-translate] listening on http://127.0.0.1:' + actual + ' mode=' + options.mode
+    + (options.mode === '429-retry'
+      ? ' failCount=' + options.failCount + ' retryAfter=' + options.retryAfter + (options.retryAfterDate ? ' (date)' : '')
+      : '')
     + (options.record ? ' record=' + path.join(options.record, 'requests.jsonl') : ''));
 });
 

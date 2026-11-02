@@ -947,12 +947,23 @@ enum AttachCLI {
         let cache = TranslationCache(url: cacheURL, maxEntries: settings.maxCacheEntries)
         await cache.load()
 
+        // 原生模式的翻译日志必须落盘：桥日志只记 TEXT/RESP/TIMEOUT，看不到
+        // 重试（429/500 的 code、等待时长、Retry-After 来源）。没有它，"为什么这句
+        // 慢了 3 秒"只能靠猜。文件路径由调用方打印，e2e / 取证脚本据此收集。
+        let sessionLog = SessionLog(
+            directory: paths.logsDirectory,
+            sessionId: RandomHex.make(8),
+            minLevel: .info
+        )
         let box = SettingsBox(settings: settings, credentials: credentials)
         let pipeline = TranslationPipeline(
             cache: cache,
             provider: { box.provider() },
             settings: { box.settings },
-            policy: ResiliencePolicy(settings: settings)
+            policy: ResiliencePolicy(settings: settings),
+            // 管线与 RGSSPipelineTranslator 必须用**同一个**日志实例：
+            // 重试在管线里记，译文校验在 translator 里记，分开两文件会丢时间顺序。
+            log: sessionLog
         )
 
         // 术语表：与全文模式同一个文件（按 gameHash 隔离）。种子表打底，落盘条目覆盖。
@@ -972,7 +983,7 @@ enum AttachCLI {
             srcLang: settings.srcLang,
             tgtLang: settings.tgtLang,
             timeoutSec: max(10, settings.timeoutSec * 3),
-            log: nil
+            log: sessionLog
         )
         return (environment, cacheURL)
     }
@@ -999,6 +1010,7 @@ enum AttachCLI {
         let (rgssEnvironment, cacheURL) = await makeRGSSPipelineEnvironment(options: options, gameRoot: gameRoot)
         await launcher.configureRGSSBridge(rgssEnvironment)
         Self.printFlush("rgss: source=pipeline cache=\(cacheURL.path)")
+        Self.printFlush("rgss: log=\(rgssEnvironment.log?.fileURL?.path ?? "-")")
         var environmentCode: ErrorCode?
         do {
             // 引擎门：`--play-native` 只服务有原生运行时的引擎。用 `launchBackend` 判定

@@ -703,7 +703,7 @@ actor TranslationPipeline {
             glossary: unionGlossary(items),
             emphasis: unionEmphasis(items)
         )
-        switch await runWithRetries(provider: provider, request: request, delays: delays) {
+        switch await runWithRetries(provider: provider, request: request, delays: delays, log: log) {
         case .success(let translation):
             var outcome = ChunkOutcome(backend: translation.backend)
             // 段数不符先攒着，不立刻判死：单条重发一次能救回大部分模型输出抖动。
@@ -887,7 +887,8 @@ actor TranslationPipeline {
     nonisolated static func runWithRetries(
         provider: TranslatorProvider,
         request: TranslationRequest,
-        delays: [Int]
+        delays: [Int],
+        log: SessionLog? = nil
     ) async -> Result<TranslationResult, MochiBoxError> {
         var attempt = 0
         while true {
@@ -900,8 +901,21 @@ actor TranslationPipeline {
             } catch let error as MochiBoxError {
                 let canRetry = error.retryable && attempt < delays.count
                 if canRetry {
-                    let delayMs = delays[attempt]
+                    // 429 带 Retry-After 时按服务端指示等，没有才用固定表。
+                    // 上限在解析层已截断（K.retryAfterCapMs），这里再 min 一次是因为
+                    // 错误也可能由测试/其他 provider 直接构造 —— 不能让一个手写值绕过上限。
+                    let serverDelay = error.retryAfterMs.map { min(max(0, $0), K.retryAfterCapMs) }
+                    let delayMs = serverDelay ?? delays[attempt]
                     attempt += 1
+                    // 退避过去在日志里完全不可见：一次 429 重试 3 次，用户只看到"很慢"。
+                    // 记 code + 实际等待 + 来源，才能区分"服务端让等"与"我们的固定表"。
+                    log?.warn("TranslationPipeline", "请求失败，按退避重试", [
+                        "code": error.code.rawValue,
+                        "httpStatus": "\(error.httpStatus ?? 0)",
+                        "attempt": "\(attempt)/\(delays.count)",
+                        "delayMs": "\(delayMs)",
+                        "delaySource": serverDelay == nil ? "backoff" : "retry-after"
+                    ])
                     if delayMs > 0 {
                         try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
                     }

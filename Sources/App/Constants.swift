@@ -85,6 +85,12 @@ enum K {
     static let maxOutputTokens: Int = 0
     /// 重试退避（毫秒）：0.5s / 1s / 2s。
     static let retryDelaysMs: [Int] = [500, 1000, 2000]
+    /// `Retry-After` 允许的最长等待（毫秒）。
+    ///
+    /// 服务端（或中间代理）可能给出 60s、一天、甚至一个解析错的过去时间；游戏主线程虽然
+    /// 不直接等它，但整条通道会被一条过大的等待拖住。超过这个上限按上限等，
+    /// 剩下的仍走下一档固定退避。
+    static let retryAfterCapMs: Int = 10_000
     /// 连续失败多少次进入熔断。
     static let circuitBreakerThreshold: Int = 5
     /// 熔断打开时长（秒）。

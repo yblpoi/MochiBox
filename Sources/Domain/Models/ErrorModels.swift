@@ -221,6 +221,12 @@ struct MochiBoxError: Error, Sendable, CustomStringConvertible {
     var httpStatus: Int?
     var rawSnippet: String?
     var underlying: String?
+    /// 服务端 `Retry-After` 指示的等待毫秒数（已按 `K.retryAfterCapMs` 截断）。
+    ///
+    /// 只有 429 会带值；无该头 / 解析失败时为 nil，调用方继续用固定退避。
+    /// 放在错误里而不是返回元组：重试决策在 `TranslationPipeline.runWithRetries`，
+    /// 那一层只能看到 `MochiBoxError`。
+    var retryAfterMs: Int?
 
     init(
         code: ErrorCode,
@@ -228,7 +234,8 @@ struct MochiBoxError: Error, Sendable, CustomStringConvertible {
         retryable: Bool? = nil,
         httpStatus: Int? = nil,
         rawSnippet: String? = nil,
-        underlying: String? = nil
+        underlying: String? = nil,
+        retryAfterMs: Int? = nil
     ) {
         self.code = code
         self.message = message ?? code.uiMessage
@@ -236,6 +243,7 @@ struct MochiBoxError: Error, Sendable, CustomStringConvertible {
         self.httpStatus = httpStatus
         self.rawSnippet = rawSnippet.map { SecretMask.mask(String($0.prefix(K.rawSnippetLimit))) }
         self.underlying = underlying
+        self.retryAfterMs = retryAfterMs
     }
 
     var asErrorInfo: ErrorInfo {
