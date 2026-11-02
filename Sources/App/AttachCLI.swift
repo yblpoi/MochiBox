@@ -635,7 +635,7 @@ enum AttachCLI {
         // `--play <非游戏目录>` 走的是启动阶段而不是 attach 阶段：漏了这条，
         // 退出码会掉回 1、也不打 `error_code:` 行，脚本没法按码分支。
         .launcherNoExecutable,
-        // 原生运行时（EasyRPG）缺失 / 没有执行位：两者都是"补运行时就可能跑"的环境缺口，
+        // 原生运行时（EasyRPG / mkxp-z）缺失 / 没有执行位：两者都是"补运行时就可能跑"的环境缺口，
         // 漏了这两条 `--play-native` 会掉回 exit 1 且不打 `error_code:` 行。
         .runtimeMissing,
         .runtimeNotExecutable,
@@ -644,6 +644,10 @@ enum AttachCLI {
         // `error_code:` 这一行（退出码 1 时连这一行都没有，等于什么都判不出来）。
         .gameIniMissing,
         .runtimeVersionMismatch,
+        // 播放模式不匹配：`--play` 遇上原生运行时后端（或 `--play-native` 遇上 Web 内核）。
+        // 用户拿错了命令，重试同样的命令一定同样失败 —— 但它是"启动前就拒绝"的可诊断
+        // 失败，按环境的同一口径给 exit 3 + `error_code:`，好让脚本直接给出正确命令。
+        .wrongPlayMode,
         // v0.4 内置内核（架构 v0.4 §5.3，硬约束 #4）：
         // 无 Aqua 会话 / WKWebView 起不来，两者都是"换台干净的有桌面的 Mac 可能就好"的
         // 环境缺口。漏了这两条，`--play` 会掉回 exit 1 且不打 `error_code:` 行。
@@ -695,6 +699,25 @@ enum AttachCLI {
         var live: ControlLiveState?
 
         do {
+            // 0) 播放模式门（**必须在 launch 之前**）：`--play` 的 attach 链路只服务 Web 内核
+            //    （embedded / chromium）。原生运行时后端（EasyRPG / mkxp-z）没有 CDP、没有页面
+            //    通道 —— 早先是在 `launcher.launch(...)` 之后再按 transport 拒绝，症状是
+            //    "游戏窗口闪一下，然后 play failed"。
+            //
+            //    判定只看静态表（`launchBackend`），不碰磁盘、不解析策略：后端不是 `nwjsWeb`
+            //    就说明这个引擎归 `--play-native`。
+            //
+            //    **不能写成 `launchBackend != nil`**：MZ/MV 也返回非 nil（`.nwjsWeb`），
+            //    那样 `--play <缺 index.html 的 MZ 目录>` 会从 `web_root_missing` 变成
+            //    `wrong_play_mode`（F6 当场抓到）。这里要挡的是"只有原生运行时"的引擎。
+            if let backend = entry.engine.launchBackend, backend != .nwjsWeb {
+                throw MochiBoxError(
+                    code: .wrongPlayMode,
+                    message: "引擎 \(entry.engine.displayName)（\(entry.engine.rawValue)）走的是原生运行时后端，"
+                        + "--play 的页面 attach 链路对它无意义（detail: wrong_play_mode）。"
+                        + "改用：MochiBox --play-native \"\(gameRoot.path)\""
+                )
+            }
             // 1) 真实产品路径：解析策略 → 起静态服务 → 拉内核/浏览器（含失败回滚）。
             let handle = try await launcher.launch(
                 entry: entry,
@@ -921,10 +944,13 @@ enum AttachCLI {
             // （不是按引擎名硬编码），新增原生后端时这里自动放行。
             // 只放行原生运行时后端（EasyRPG / mkxp-z）；nwjs 与 nil 都不归这条路径。
             guard let backend = detection.engine.launchBackend, backend != .nwjsWeb else {
+                // 对称的另一半：Web 内核（MV/MZ）该走 `--play`。用 wrong_play_mode 而不是
+                // launcher_no_executable —— 目录里什么都不缺，缺的是"这条命令配这个引擎"。
                 throw MochiBoxError(
-                    code: .launcherNoExecutable,
+                    code: .wrongPlayMode,
                     message: "引擎 \(detection.engine.displayName)（\(detection.engine.rawValue)）"
-                        + "没有原生运行时后端（--play-native 只支持 RPG Maker 2000/2003、XP、VX、VX Ace）"
+                        + "没有原生运行时后端（--play-native 只支持 RPG Maker 2000/2003、XP、VX、VX Ace）。"
+                        + "Web 内核请用：MochiBox --play \"\(gameRoot.path)\""
                 )
             }
 
