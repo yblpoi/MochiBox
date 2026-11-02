@@ -12,12 +12,13 @@
 |---|---|---|---|---|
 | 2000 / 2003 | — | EasyRPG Player 0.8.1（内置，33.9 MB universal） | 跑通：消息框与菜单渲染出中文 | A |
 | XP | RGSS1 | mkxp-z（自建，`f02d586`） | 跑通：标题→New Game→Map001→事件中文→菜单→行走 Step 0→5 | A |
-| VX | RGSS2 | mkxp-z 同一份 | 跑通：标题→地图→菜单→行走；脚本 = 官方默认集 + VX_SP2 + 3 行字体垫片 | B+ |
+| VX | RGSS2 | mkxp-z 同一份 | 跑通：标题→地图→菜单→行走；脚本 = 官方 EN 默认集 95 段 + VX_SP2 + 3 行字体垫片，**94/95 段逐字节一致**，`Game_Interpreter` 差 2 行（社区修补） | A- |
 | VX Ace | RGSS3 | mkxp-z 同一份 | 跑通：标题→New Game→地图→行走（坐标 3,5→7,5→7,7）；脚本 = 默认集 129 段，第三方脚本已剔除 | A |
 
 **证据强度怎么算**（沿用 `acceptance-assertion-rules.md` 的分级思路）：
 
 - **A**：引擎日志认出版本 + 画面 OCR 出**预期文本**（中文/数值），且观测手段与产物可复查。
+- **A-**：同 A，且有逐字节比对支撑；但比对中存在**已定位**的差异（VX：1 段 2 行），结论必须带限定。
 - **B+**：同 A，但行走是像素位移证据、没有坐标读数；或脚本集不是纯默认，结论要限定范围。
 - **B**：同 A，但关键一步（行走）只有画面变化，没有数值或文本读数。
 - **C**：只有日志/窗口出现，没有画面内容证据（本次没有 C 级结论）。
@@ -88,16 +89,31 @@
   `RPGMakerVXTestGame/Data/Scripts.rvdata` 的 LFS 实体（108,286 B），
   解出 **98 段**，末尾追加 **1 段** `MKXP Font Shim`，合计 **99 段 / 108,487 B**。
   98 段 = RPG Maker VX **默认脚本布局**（`▼ Modules` … `▼ Scenes` 的完整类清单）
-  ＋ Enterbrain 官方的 `▼ Patch / VX_SP2` ＋ `▼ Materials / ( Insert here )` ＋ `▼ Main Process / Main`。
-- **是否被改过（审计结论）**：**没有改默认脚本**，只加了一段 3 行垫片。
-  三条可复查的判据（本次用 `Sources/Adapters/Marshal` 写工具解包逐段核对）：
-  1. 所有段里被**二次打开**的类只有 `Sprite_Base` / `Window_NameEdit` / `Window_NameInput`，
-     且都发生在 `VX_SP2` 段 —— 正是 Enterbrain 官方补丁的改动范围，别处没有重开类。
-  2. 全量扫描非 ASCII：中文只出现在 `MKXP Font Shim` 段（日文假名是 `Window_NameInput`
-     的默认表、`VX_SP2` 的官方注释）。
-  3. 段名与顺序、`Game_Map#passable?(x, y, flag = 0x01)`、`Game_Player#map_passable?`
-     等关键函数与 VX 默认实现一致（`map_passable?` 就是两参数版本，没有塞方向参数）。
-  追加的垫片全文（3 行，182 B）：
+  ＋ `▼ Patch / VX_SP2` 补丁段 ＋ `▼ Materials / ( Insert here )` ＋ `▼ Main Process / Main`。
+- **是否被改过（逐字节比对结论）**：官方 EN 默认脚本 **95 段 / 600,677 B**，我们 **98 段 / 603,171 B**；
+  **94 段逐字节一致**，**1 段有 2 行差异**（`Game_Interpreter`，0-based index 29，
+  60,567 → 60,544 B，**−23 B**），**3 段无对应**（`▼ Patch` / `VX_SP2` / 空段）。
+  基线是 `https://github.com/orzFly/RPGMakerDefaultScripts` 的 `_sources/rpgmaker-vx.en`
+  （第三方镜像的官方 EN 默认脚本），并与 archive.org 的 2009 年 RMVX 模板工程互证。
+- **那 2 行是社区修补，不是官方补丁**：
+  - 官方第 750 行 `actor = $game_actors[@parameters[1]]` —— `@parameters` 与 `[1]` 都是错的（会崩），
+    我们（和日文官方）是 `when 4 # Actor` 分支里用 `@params[4]`。
+  - 官方第 841 行 `$game_variables[i] = value` —— 漏了 `*`，我们是 `$game_variables[i] *= value`。
+
+  日文官方 1.02 的同一段本来就是对的（`when 4  # アクター` + `@params[4]` + `*=`）；
+  是英文移植引入的 bug，2009 年模板里也一样，社区补丁 `ControlVariablesFix` 专门修这个。
+- **`VX_SP2` 不在官方默认集里**：官方 EN 与 JP 两份 95 段基线的尾段都是
+  `▼ Materials` → `( Insert here )` → 空 → `▼ Main Process`，**都不含 SP2**。
+  SP2 正文 2,517 B 与 `xsin333/dragonballzrpgvx` 的 `135 - VX_SP2.rb` 逐字节相同。
+  早先按 `eb_sp1_`/`eb_sp2_` 前缀与日文官方注释把它记成"官方补丁段"，这个观察不足以让它
+  进入 95 段基线，所以比对时单列：只能说它是**随工程一起带的 SP2 补丁**。
+- **旧的结构级判据（保留，但已不足以支撑"未改动"）**：被二次打开的类只有
+  `Sprite_Base` / `Window_NameEdit` / `Window_NameInput`（全在 `VX_SP2` 段）；中文只出现在
+  `MKXP Font Shim` 段（日文假名是 `Window_NameInput` 的默认表、`VX_SP2` 的注释）；
+  `Game_Map#passable?(x, y, flag = 0x01)`、`Game_Player#map_passable?`（两参数版）与默认实现一致。
+  **结构级审计无法发现段内改动，已由逐字节比对取代** —— `Game_Interpreter` 那 2 行正是段内改动，
+  上面三条判据全部照常通过。
+- 追加的垫片全文（3 行，182 B）：
 
   ```ruby
   # MKXP 平台适配垫片（仅测试工程，非 Enterbrain 默认脚本）
@@ -120,7 +136,8 @@
   `passages[2048]` 置 `0x00`，脚本零改动即可行走。
 - **限制**：`Tilesets.rvdata` 是我们补的 572 B 占位（VX 的通行表在 `System.rvdata` 里，
   `Tilesets` 只存名字/标签，运行时不读）；"x 8→99" 这个数值没有留存读数，
-  所以证据强度记 B+ 而不是 A。
+  行走只有像素位移证据。脚本这边有逐字节比对，但 **1 段 2 行不一致**，
+  所以证据强度记 **A-** 而不是 A。
 
 ### RPG Maker VX Ace（RGSS3）
 
@@ -192,11 +209,11 @@
 | 许可 | MIT 或 Apache-2.0（双许可，任选其一） | CC0-1.0 |
 | 原始大小 | 108,286 B / 98 段 | 143,430 B / 131 段（加垫片后 143,630 B / 132 段） |
 | 入库状态 | **不入库**，只在临时目录 | **不入库**，只在临时目录 |
-| 我们的改动 | 追加 3 行 `MKXP Font Shim`（+201 B，尾段） | 追加 4 行 `MKXP Font Shim`（+200 B，尾段）；**另剔除 3 段 / 1,047 行第三方脚本** |
+| 我们的改动 | 追加 3 行 `MKXP Font Shim`（+201 B，尾段）；工程自带 `Game_Interpreter` 2 行社区修补（相对官方 EN，见上文） | 追加 4 行 `MKXP Font Shim`（+200 B，尾段）；**另剔除 3 段 / 1,047 行第三方脚本** |
 | 剔除后 | — | 136,078 B / 129 段 / 19,927 行 |
-| 默认脚本是否被动过 | 没有。`VX_SP2` 是 Enterbrain 官方补丁段（`eb_sp1_`/`eb_sp2_` 前缀、日文官方注释） | **动过 2 个方法**：`Game_System#japanese?`、`Game_Interpreter#command_225`（见下节《更正》）；剔除的 3 段第三方脚本都在默认清单之外，剔除后无类重开 |
+| 默认脚本是否被动过 | **动过 2 行**：`Game_Interpreter`（`when 4 # Actor` 的 `@params[4]`、变量 `*=`），社区修补官方英文版的 bug；官方 EN 95 段比对 94 段逐字节一致，`VX_SP2` 不在官方基线内（单列） | **动过 2 个方法**：`Game_System#japanese?`、`Game_Interpreter#command_225`（见下节《更正》）；剔除的 3 段第三方脚本都在默认清单之外，剔除后无类重开 |
 | 额外内容 | 无 | 无（`QuestSystem` 与两段 Neon Black 补丁已剔除） |
-| 能不能说"默认脚本兼容" | **能**，限定为"VX 默认脚本集（含官方 VX_SP2 补丁）" | **能**，限定为"VX Ace 默认脚本集（110 段），剔除第三方后能跑通，其中 2 个方法带社区修 bug 改动" |
+| 能不能说"默认脚本兼容" | **能**，限定为"VX 默认脚本集（含 VX_SP2 补丁 + `Game_Interpreter` 两行社区修补）与 mkxp-z 兼容"；**不能说"逐字节等于官方原版"** | **能**，限定为"VX Ace 默认脚本集（110 段），剔除第三方后能跑通，其中 2 个方法带社区修 bug 改动" |
 | 数据层真实样本（`Data/*`） | `Fixtures/rmvx-real/`：14 个 `.rvdata`（MIT 或 Apache-2.0），往返字节相同 | `Fixtures/rmvxace-real/`：27 个 `.rvdata2` + `Game.ini`/`Game.rvproj2`（CC0-1.0，470,061 B），往返字节相同、1463 条文本 |
 
 **VX Ace 数据层不再是"无真实样本"**（2026-11-02 入库）：`Fixtures/rmvxace-real/` 是
@@ -205,10 +222,15 @@
 `M-L1-VXA-PARSE/RT/TEXT/ENC/STRUCT` 分别钉住：27 个文件逐个可解析、序列化回去字节完全相同、
 1463 条文本（门槛 > 50）、编码全判 UTF-8、`@terms` 的 4 个容器能取到值。
 
-为什么不下"逐字节等于 Enterbrain 官方文件"的结论：这台机器上没有装 RPG Maker，
-拿不到官方安装目录里的那份 `Scripts.*` 做 byte-diff。上面的结论来自**结构审计**
+为什么 VX Ace 不下"逐字节等于 Enterbrain 官方文件"的结论：这台机器上没有装 RPG Maker，
+拿不到官方安装目录里的那份 `Scripts.rvdata2` 做 byte-diff。VX Ace 的结论来自**结构审计**
 （段名/顺序、类重开范围、非 ASCII 扫描），不是哈希对比 —— 这一点必须写明，别把
 "没发现改动"说成"证明没改动"。
+
+VX 这一栏 2026-11-02 已补上逐字节比对：基线是第三方镜像的官方 EN 默认脚本，
+再与 archive.org 的 2009 年 RMVX 模板工程互证（不是本机安装副本）。结果是
+**94/95 段一致、1 段 2 行差异、3 段无对应** —— 连"官方默认脚本"这个词都要打折扣：
+我们那份多出来的 `VX_SP2` 不在官方基线里。
 
 ## 更正：VX Ace 默认脚本**不是**零改动
 
@@ -222,7 +244,8 @@
 
 所以对外只能说：**"VX Ace 默认脚本集（110 段）剔除 3 段第三方脚本后能跑通，其中 2 个方法
 带社区修 bug 改动"**。不能说"零改动"，也不能把这份脚本集当成官方默认脚本的等价物 ——
-它和 VX 那一栏（只加了自己的 3 行 shim、默认脚本确实没动）不是一回事。
+它和 VX 那一栏（94/95 段逐字节一致、1 段 2 行社区修补）不是一个量级的问题，
+但两栏都不能说成"默认脚本零改动"。
 
 ## 复现步骤（给下一个人）
 
@@ -259,6 +282,11 @@
    `System.rvdata` 的 `@passages[tile_id]`（8192 项、int16）。方向位含义：
    `0x01` 下 / `0x02` 左 / `0x04` 右 / `0x08` 上，`0x10` = 不影响通行，`0x0f` = 四向全挡。
    不通行时先怀疑这里，不要先怀疑引擎。
+6. **存档位置**：mkxp-z 没有存档路径配置项（源码 grep `savePath`/`SAVE_PATH` 零命中），
+   `save_data` 按进程 cwd 解析，而我们把 cwd 设成游戏根目录 —— 所以 RGSS 存档落在游戏目录内
+   （与 `Data/` 同级），与原版 RPG Maker 行为一致。数据目录（pref，由 `dataPathOrg`/`dataPathApp`
+   决定）已按 gameHash 隔离，但存档本身不做隔离，这是引擎行为不是我们的选择。
+   如果游戏目录只读，存档会失败。
 
 ## 已知缺口
 
@@ -268,8 +296,9 @@
 （下面第 1、2 条），不是数据层。
 
 1. **没有官方默认脚本的字节级副本**：本机未安装 RPG Maker，无法做
-   "解出来的段 == 安装目录里的段"的 byte-diff。VX 的"未改动"是结构审计结论；
-   VX Ace 已经知道有 2 个默认方法被改过（见《更正》）。
+   "解出来的段 == 安装目录里的段"的 byte-diff。VX 已用第三方镜像的官方 EN 脚本做逐字节比对
+   （**94/95 一致，1 段 2 行差异，3 段无对应**），但比对对象不是本机安装副本，且官方基线
+   不含 `VX_SP2`；VX Ace 仍然是结构审计结论，已知道有 2 个默认方法被改过（见《更正》）。
 2. **VX Ace 的"默认脚本集"是结构审计结论**：129 段来自 CC0 工程，剔除 3 段第三方脚本后
    能跑通，但 **2 个默认方法被改过**（见《更正：VX Ace 默认脚本不是零改动》）；
    没有官方副本做 byte-diff，也没有对 110 段逐行做语义比对。
