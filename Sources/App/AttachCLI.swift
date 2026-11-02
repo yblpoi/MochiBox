@@ -922,6 +922,61 @@ enum AttachCLI {
 
     // MARK: - `--play-native`（EasyRPG 原生运行时）
 
+    /// 构造 `--play-native` 的 RGSS 翻译环境。
+    ///
+    /// 关键点：用与产品路径**同一批类型**（Settings / SettingsBox / TranslationPipeline /
+    /// TranslationCache / GlossaryStore），只把 cache 换成 AppPaths 下当前语言对的分片
+    /// （`cache.ja-zh-Hans.jsonl`）。不新建第二套缓存实现。
+    ///
+    /// `--provider passthrough`（默认）时管线是直通：桥会对所有 TEXT 回 PENDING + 原文，
+    /// 游戏显示原文 —— 这是"没配后端"的正确表现，不是故障。
+    private static func makeRGSSPipelineEnvironment(
+        options: Options,
+        gameRoot: URL
+    ) async -> (RGSSPipelineEnvironment, URL) {
+        let paths = AppPaths.shared
+        paths.ensureDirectories()
+
+        var settings = Settings()
+        settings.backendType = (options.provider == "openai") ? .openai : .passthrough
+        settings.endpoint = options.endpoint
+        settings.allowSendTextToBackend = true
+        let credentials = Credentials(apiKey: options.apiKey, deeplApiKey: options.apiKey)
+
+        let cacheURL = paths.cacheShardURL(for: settings.languagePair)
+        let cache = TranslationCache(url: cacheURL, maxEntries: settings.maxCacheEntries)
+        await cache.load()
+
+        let box = SettingsBox(settings: settings, credentials: credentials)
+        let pipeline = TranslationPipeline(
+            cache: cache,
+            provider: { box.provider() },
+            settings: { box.settings },
+            policy: ResiliencePolicy(settings: settings)
+        )
+
+        // 术语表：与全文模式同一个文件（按 gameHash 隔离）。种子表打底，落盘条目覆盖。
+        let glossaryBox = GlossaryBox()
+        var glossary = Glossary(GlossarySeed.entries)
+        let gameHash = WebPortAssignments.gameHash(for: gameRoot)
+        if let file = GlossaryStore(paths: paths, gameHash: gameHash).load() {
+            for entry in file.entries { glossary.upsert(entry) }
+            for source in file.deletedSources ?? [] { glossary.remove(source: source) }
+        }
+        glossaryBox.update(glossary)
+
+        let environment = RGSSPipelineEnvironment(
+            pipeline: pipeline,
+            cache: cache,
+            glossaryBox: glossaryBox,
+            srcLang: settings.srcLang,
+            tgtLang: settings.tgtLang,
+            timeoutSec: max(10, settings.timeoutSec * 3),
+            log: nil
+        )
+        return (environment, cacheURL)
+    }
+
     /// 原生运行时是**单进程**：没有 CDP、没有静态服务、没有页面 Agent。
     ///
     /// 因此它**不复用** `--play` 的 attach / drain 链路，也不打印 `play: http=`
@@ -938,6 +993,12 @@ enum AttachCLI {
         print("play: root=\(gameRoot.path) engine=\(detection.engine.rawValue) provider=\(options.provider) duration=\(options.duration)s")
 
         let launcher = GameLauncher()
+        // RGSS 文本桥的翻译来源：与产品路径同一套 Settings / Credentials / TranslationCache /
+        // TranslationPipeline。`--provider` / `--endpoint` / `--api-key` 在这里第一次真正
+        // 作用到 mkxp-z（旧实现只把它们用在 `--play` 的浏览器路径上，原生运行时被忽略）。
+        let (rgssEnvironment, cacheURL) = await makeRGSSPipelineEnvironment(options: options, gameRoot: gameRoot)
+        await launcher.configureRGSSBridge(rgssEnvironment)
+        Self.printFlush("rgss: source=pipeline cache=\(cacheURL.path)")
         var environmentCode: ErrorCode?
         do {
             // 引擎门：`--play-native` 只服务有原生运行时的引擎。用 `launchBackend` 判定
@@ -979,6 +1040,13 @@ enum AttachCLI {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             await launcher.terminate(handle)
+
+            let stats = await rgssEnvironment.cache.stats()
+            await rgssEnvironment.cache.flush()
+            Self.printFlush(
+                "rgss-cache: entries=\(stats.entries) hits=\(stats.hits) stores=\(stats.stores) "
+                    + "hitRate=\(stats.hitRatePercentText) path=\(cacheURL.path)"
+            )
             return 0
         } catch let error as MochiBoxError {
             if Self.environmentCodes.contains(error.code) {

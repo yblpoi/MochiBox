@@ -102,6 +102,9 @@ actor GameLauncher {
     private var mkxpOverlays: [Int32: MKXPZGameConfig.Overlay] = [:]
     /// mkxp-z 的 RGSS 文本桥（pid → 监听器）。`terminate` 时关闭监听并断开在飞连接。
     private var rgssBridges: [Int32: RGSSBridge] = [:]
+    /// RGSS 文本桥的翻译环境：由 SessionController / `--play-native` 在启动前注入。
+    /// nil = 没有翻译来源，桥对所有 TEXT 回 PENDING + 原文（游戏照常跑，显示原文）。
+    private var rgssPipelineEnvironment: RGSSPipelineEnvironment?
 
     private let webPorts: WebPortAssignments
     /// 运行期目录（`--selftest` 用临时根注入，保证不写用户目录）。
@@ -110,6 +113,14 @@ actor GameLauncher {
     init(paths: AppPaths = AppPaths.shared) {
         self.paths = paths
         self.webPorts = WebPortAssignments(paths: paths)
+    }
+
+    /// 注入 RGSS 文本桥的翻译环境（在产品路径由 SessionController 调用）。
+    ///
+    /// 只影响**之后**启动的 mkxp-z：环境里的 cache 与 pipeline 都是会话现有实例，
+    /// 这里不新建缓存，也不改任何设置。EasyRPG / MV 路径忽略它。
+    func configureRGSSBridge(_ environment: RGSSPipelineEnvironment?) {
+        rgssPipelineEnvironment = environment
     }
 
     // MARK: - 策略解析（纯磁盘，不启动任何东西）
@@ -793,14 +804,19 @@ actor GameLauncher {
         var bridgePort: Int?
 
         if let hookScript = hookScript {
-            let candidate = RGSSBridge()
+            // 翻译来源 = 会话现有管线。没有环境时 translator 为 nil：桥只回 PENDING + 原文，
+            // 游戏显示原文 —— 比"为了翻译让启动失败"好。
+            let translator = rgssPipelineEnvironment.map { RGSSPipelineTranslator(environment: $0) }
+            var configuration = RGSSBridge.Configuration()
+            configuration.translationSourceName = translator == nil ? "none" : "pipeline"
+            let candidate = RGSSBridge(configuration: configuration, translator: translator)
             do {
                 bridgePort = try candidate.start()
                 bridge = candidate
                 log?.info("GameLauncher", "RGSS 文本桥已启动", [
                     "port": "\(bridgePort ?? 0)",
                     "hook": hookScript.path,
-                    "source": "test-dictionary"
+                    "source": configuration.translationSourceName
                 ])
             } catch {
                 log?.warn("GameLauncher", "RGSS 文本桥启动失败，本次不翻译", [

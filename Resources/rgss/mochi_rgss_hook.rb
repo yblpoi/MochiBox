@@ -19,7 +19,8 @@
 #
 # 行协议（UTF-8 文本，字段用 TAB 分隔，行尾 LF，base64 用 pack('m0')）：
 #   → TEXT\t<seq>\t<RGSS1|RGSS2|RGSS3>\t<base64(原文)>
-#   ← RESP\t<seq>\t<base64(译文)>
+#   ← RESP\t<seq>\t<base64(译文)>                      正常译文（会进本进程缓存）
+#   ← RESP\t<seq>\t<base64(原文的 UTF-8 版本)>\tPENDING  还没译好：先显示原文，不缓存
 #
 # 设计约束：
 #   * 只依赖 Ruby 内置的 socket；不 require json / net/http / yaml / uri / time。
@@ -34,6 +35,9 @@ module MochiRGSSHook
   CONNECT_TIMEOUT   = 0.2         unless const_defined?(:CONNECT_TIMEOUT, false)
   IO_TIMEOUT        = 0.2         unless const_defined?(:IO_TIMEOUT, false)
   COOLDOWN_SECONDS  = 2.0         unless const_defined?(:COOLDOWN_SECONDS, false)
+  # 宿主回 PENDING（"这次还没译好，先显示原文"）后，同一句在这么短时间内不再重复问。
+  # 它不是失败冷却：不阻塞别的句子，也不影响下一次消息。1.5s 是"首屏晚一拍"的窗口。
+  PENDING_SECONDS   = 1.5         unless const_defined?(:PENDING_SECONDS, false)
   LOG_MAX_BYTES     = 1024 * 1024 unless const_defined?(:LOG_MAX_BYTES, false)
   CACHE_MAX         = 256         unless const_defined?(:CACHE_MAX, false)
 
@@ -206,9 +210,24 @@ module MochiRGSSHook
       cached = cache[key]
       return cached if cached
 
-      translated = request(text, version)
-      return nil unless translated
+      # 刚回过 PENDING：同一句在 1.5s 内不重复请求（重绘 / 立刻重开对话时）。
+      # 窗口过后再问，那时宿主缓存通常已经有译文了。
+      until_time = pending[key]
+      return nil if until_time && monotonic < until_time
 
+      response = request(text, version)
+      return nil unless response
+      translated, is_pending = response
+
+      if is_pending
+        # 显示原文的 UTF-8 版本，但**不写进缓存**：下一次同一句还要再问一次。
+        pending[key] = monotonic + PENDING_SECONDS
+        pending.shift while pending.size > CACHE_MAX
+        log("PENDING (display original) #{translated.inspect}")
+        return translated
+      end
+
+      pending.delete(key)
       cache[key] = translated
       # 反向登记：下一轮 refresh/process_all_text 若拿到的是已经替换过的译文，
       # 不再重复请求（也避免服务端把译文再翻一遍）。
@@ -249,13 +268,15 @@ module MochiRGSSHook
           return nil
         end
 
-        fields = line.split("\t", 3)
-        unless fields.size == 3 && fields[0] == 'RESP' && fields[1] == seq.to_s
+        # 4 段协议：`RESP\t<seq>\t<base64>\tPENDING`；第 4 段省略 = 正常译文。
+        fields = line.split("\t", 4)
+        unless fields.size >= 3 && fields[0] == 'RESP' && fields[1] == seq.to_s
           note_failure
           log("bad response seq=#{seq} #{line[0, 160].inspect}")
           return nil
         end
 
+        is_pending = fields.size >= 4 && fields[3].strip == 'PENDING'
         translated = fields[2].strip.unpack1('m0').force_encoding('UTF-8')
         unless translated.valid_encoding? && !translated.empty?
           note_failure
@@ -263,8 +284,8 @@ module MochiRGSSHook
           return nil
         end
 
-        log("RESP seq=#{seq} #{translated.inspect}")
-        translated
+        log("RESP seq=#{seq}#{is_pending ? ' (pending)' : ''} #{translated.inspect}")
+        [translated, is_pending]
       rescue Exception => e
         note_failure
         log("request failed seq=#{seq}: #{e.class}: #{e.message}")
@@ -386,6 +407,11 @@ module MochiRGSSHook
 
     def cache
       $mochi_hook_cache ||= {}
+    end
+
+    # key → 可以再次请求的时刻。与 cache 分开：PENDING 的原文不是译文，不能混进 cache。
+    def pending
+      $mochi_hook_pending ||= {}
     end
 
     def cooling_down?

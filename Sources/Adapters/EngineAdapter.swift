@@ -212,6 +212,16 @@ protocol EngineAdapter: AnyObject, Sendable {
 
     /// 7. 自愈：hook 被插件覆盖时重装 agent（幂等）。
     func ensureAgentAlive() async
+
+    /// 8. 注入 RGSS 文本桥的翻译环境（只有 mkxp-z 会用到；其余后端 no-op）。
+    ///
+    /// 必须放在 `launch` **之前**调用：桥在启动子进程时就绑好端口并带上环境变量。
+    func configureRGSSBridge(_ environment: RGSSPipelineEnvironment?) async
+}
+
+extension EngineAdapter {
+    /// 默认 no-op：MV/MZ 与 EasyRPG 没有 RGSS 文本桥。
+    func configureRGSSBridge(_ environment: RGSSPipelineEnvironment?) async {}
 }
 
 // MARK: - MV/MZ 适配器

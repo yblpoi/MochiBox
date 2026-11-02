@@ -294,6 +294,23 @@ final class SessionController: ObservableObject {
         }
         self.adapter = adapter
 
+        // RGSS 文本桥的翻译来源 = 本会话现有的管线与缓存。必须在 launch 之前注入：
+        // mkxp-z 一起来就会加载 hook，桥那时必须已经知道往哪里翻。
+        // glossaryBox 是共享引用：fullText.attach 之后加载的术语表会在这里即时生效。
+        if let pipeline = pipeline {
+            let environment = RGSSPipelineEnvironment(
+                pipeline: pipeline,
+                cache: cache,
+                glossaryBox: glossaryBox,
+                srcLang: settings.srcLang,
+                tgtLang: settings.tgtLang,
+                // 单条请求最坏：timeoutSec + 重试退避。多留一点给排队，别让等待者先放弃。
+                timeoutSec: max(10, settings.timeoutSec * 3),
+                log: log
+            )
+            await adapter.configureRGSSBridge(environment)
+        }
+
         do {
             let handle = try await adapter.launch(entry, log: log)
             port = handle.port

@@ -41,6 +41,10 @@ final class MKXPZAdapter: EngineAdapter, @unchecked Sendable {
 
     // MARK: launch
 
+    func configureRGSSBridge(_ environment: RGSSPipelineEnvironment?) async {
+        await launcher.configureRGSSBridge(environment)
+    }
+
     func launch(_ entry: GameEntry, log: SessionLog?) async throws -> LaunchHandle {
         let logger = log ?? self.log
         let gameRoot = URL(fileURLWithPath: entry.path, isDirectory: true)

@@ -1,9 +1,11 @@
 # RGSS 文本通道：可行性验证与 hook 协议
 
 面向：准备把 XP / VX / VX Ace 的**屏上文本**接进 MochiBox 的人。
-脚本：`Resources/rgss/mochi_rgss_hook.rb`（可复用骨架，尚未接入 `GameLauncher`）。
+脚本：`Resources/rgss/mochi_rgss_hook.rb`（已由 `GameLauncher` 注入 `preloadScript`）。
+宿主：`Sources/Adapters/RGSSBridge.swift` + `Sources/Adapters/RGSSPipelineTranslator.swift`。
 结论一句话：**不要用 `customScript`；用 `preloadScript` + `TracePoint(:end)` 延迟挂钩，三版分别认
-`process_all_text` / `start_message` / `refresh`，协议手写，失败一律放行原文。**
+`process_all_text` / `start_message` / `refresh`，协议手写；翻译走现有管线，首屏超时就回
+PENDING + 原文，游戏主线程绝不等网络。**
 
 ## 0. 结论
 
@@ -139,7 +141,8 @@ UTF-8 文本，TAB 分字段，LF 结尾，一行一条消息：
 
 ```text
 → MochiBox:  TEXT	<seq>	<RGSS1|RGSS2|RGSS3>	<base64(原文)>
-← MochiBox:  RESP	<seq>	<base64(译文)>
+← MochiBox:  RESP	<seq>	<base64(译文)>                      正常译文（hook 会缓存）
+← MochiBox:  RESP	<seq>	<base64(原文的 UTF-8 版本)>	PENDING  还没译好：显示原文，不缓存
 ```
 
 | 字段 | 说明 |
@@ -147,6 +150,7 @@ UTF-8 文本，TAB 分字段，LF 结尾，一行一条消息：
 | `seq` | 进程内自增十进制；响应必须原样带回，不匹配就丢弃 |
 | `version` | `RGSS1` / `RGSS2` / `RGSS3`，不要用带空格的 “VX Ace” |
 | `base64` | UTF-8 字节的 `pack('m0')`，严格模式、无换行；解码用 `unpack1('m0')` |
+| 第 4 段 | 省略 = 正常译文；`PENDING` = 这次没译好，载荷是原文（UTF-8 重编码） |
 | 原文 | 可以含 `\n`（XP 的多行是一个字符串）；base64 把它藏起来，不会破坏行协议 |
 | 多行 | VX/VX Ace 的 `texts` 数组**每个元素一条 TEXT**；XP 整串一条 |
 
@@ -154,6 +158,10 @@ UTF-8 文本，TAB 分字段，LF 结尾，一行一条消息：
 
 - 必须在同一条连接上回到对应 `seq`；
 - 译文必须是合法 UTF-8；空串或非法 UTF-8 会被 hook 丢弃；
+- **PENDING 的载荷必须非空**：它是原文的 UTF-8 重编码。回空会让 hook 放行游戏原串，
+  而 RGSS1/2 的 CP932 原串在当前 mkxp-z 构建里会让 `Window_Message` 抛
+  `invalid byte sequence in UTF-8`（实测，见 §8.1）；
+- PENDING 不触发 2s 失败冷却；hook 按原文在本进程内记 1.5s 的“暂不重问”窗口；
 - 不需要 JSON、HTTP、长度前缀——行协议本身足够；
 - 默认只监听 `127.0.0.1:47123`，不要绑 `0.0.0.0`。
 
@@ -184,7 +192,9 @@ end
 - 连接 / 写 / 读都用**非阻塞 IO + 截止时间**，不是裸 `gets`；
 - 连接 0.2 s，读写各 0.2 s；
 - 连不上、超时、EOF、协议错、base64 错、非法 UTF-8 → 返回 `nil`，调用方保留原文；
-- 失败后 2 s 冷却，避免服务端没起时每条消息都卡 0.2 s；
+- **PENDING 不是失败**：宿主 120ms 内没译好时回 `PENDING + 原文`，hook 显示原文但
+  不写缓存、不触发 2s 冷却；同一句按原文记 1.5s 的“暂不重问”窗口；
+- 真正的失败（连不上 / 超时 / 协议错）后 2 s 冷却，避免服务端没起时每条消息都卡 0.2 s；
 - 整个 hook 体 `rescue Exception`，**绝不让异常冒到游戏主循环**；
 - 实测：黑洞服务端（accept 后不回复）阻塞 `0.206 s` 后放行原文（§7.2）。
 
@@ -192,6 +202,7 @@ end
 
 - `原文 -> 译文` 和 `译文 -> 译文` 都进缓存（最多 256 条）；
 - 反向登记是为了防止下一轮 `refresh` / `process_all_text` 拿到已经替换过的译文再请求一次；
+- PENDING 的原文**不进译文缓存**，单独记在 `pending` 表里（key → 可再次请求的时刻）；
 - 缓存只影响显示层，不写存档。
 
 ### 6.5 日志
@@ -310,18 +321,74 @@ VERSION="RGSS3"  RENDERED=["【中文测试】"]
    - 事件命令里的 401 原文、存档、变量、分支判断都不变。
 2. **重绘可能覆盖。** 如果游戏再次用原文调用入口，hook 会再翻一次（缓存挡住重复请求）；
    如果后续脚本重新 `alias` 或重定义入口，我们的别名可能被绕过。
-3. **控制符会被整段替换。** 当前骨架把整行当不透明文本发给服务端；`\C[n]`、`\N[n]`、`\.`、`\|`、
-   `\!`、`\>` 等控制符不会自动保留。接产品前必须做“控制符分段 + 只翻可见文本”，否则中文能显示，
-   但颜色、停顿、名字替换会坏。
-4. **编码。** hook 把 Ruby 字符串原样 base64，不做转码；本次 XP fixture 是 UTF-8。RGSS1/2 的
-   CP932 工程或 GB18030 汉化工程，服务端要先按工程编码解码，否则会乱码或解码失败（见 §5）。
+3. ~~**控制符会被整段替换。**~~ **已解决**：宿主用 `LegacyEscapeCodec`（RGSS 码表）把一行切成
+   `text` / `code` 段，只把 `text` 段送翻译，回填时按本行自己的骨架拼回，并逐项校验
+   `\C[n]` / `\N[n]` / `\V[n]` / `\G` / `\I[n]` / `\|` / `\.` / `\!` / `\>` / `\<` / `\^`
+   的顺序与字面（模型写进译文也会被拦下）。
+4. **编码。** hook 把 Ruby 字符串原样 base64；宿主按 UTF-8 → Shift_JIS（CP932）→ GB18030
+   逐档解（顺序不能换：GB18030 几乎能解任何字节，放前面会把 CP932 解成乱码）。GB18030 只是
+   最后一档兜底：能被 CP932 解成“合法文本”的 GB18030 字节流仍可能解错。三档都解不了的字节流
+   会走 PENDING 显示原文。RGSS1/2 的 CP932 原文在 PENDING 时会被**重编码成 UTF-8** 再回给
+   hook —— 当前 mkxp-z 构建的 `Window_Message` 直接处理 CP932 原串会抛
+   `invalid byte sequence in UTF-8`（§8.1 有实测）。
 5. **字体。** 译文含中文时需要 CJK 字体；测试机有 `Primary font not found: Arial` 警告，但中文
    仍正常渲染（mkxp-z 回退字体）。
-6. **延迟。** 请求在游戏主线程同步执行；单行最坏 0.2 s，多行消息会累加。缓存和 2 s 冷却只能兜底，
-   产品化建议预取/批量/异步，或把超时再压小。
+6. **延迟（已改为异步）。** 请求不再跑在游戏主线程上：桥 120ms 到点就回 `PENDING + 原文`，
+   游戏最多等 0.2s。代价是**首遍显示原文**，同一原文下一次出现（重绘 / 重新触发对话 / 重启后）
+   才显示中文。这是刻意的取舍；不要为了“首屏中文”把桥改成同步等待。
 7. **安全。** 默认只连 `127.0.0.1`；协议无认证、无加密。不要监听公网，也不要把端口暴露给不可信进程。
-8. **已接入产品（通路版）。** `GameLauncher` 已注入 `preloadScript`，`RGSSBridge` 监听 loopback 随机端口；
-   翻译来源仍是测试词典（见 `RGSSBridge.testDictionary`），接 LLM 是下一步。
+8. **已接入现有翻译管线。** `GameLauncher` 注入 `preloadScript`，`RGSSBridge` 监听 loopback 随机端口；
+   翻译来源是 `RGSSPipelineTranslator → TranslationPipeline → TranslationCache / TranslatorProvider`，
+   与 MV/MZ 共用同一个缓存实现与 provider 工厂。`--play-native` 的 `--provider` / `--endpoint` /
+   `--api-key` 现在真正生效（旧实现只把它们用在 `--play` 的浏览器路径上）。
+
+### 8.1 宿主接线与三版实测（2026-11-02）
+
+调用链（全部是现有实现，没有第二套缓存 / provider）：
+
+```text
+hook（Ruby，游戏主线程）
+  → RGSSBridge（loopback，120ms 应答闸）
+  → RGSSPipelineTranslator
+  → LegacyEscapeCodec.skeleton(raw:engineFamily:"rgss")      只留 text 段
+  → Segmenter.cacheKey(engineFamily:"rgss", profile:…)
+  → TranslationPipeline.resolve
+      · 命中 → PipelineOutcome.hit（≤120ms 回中文）
+      · 未命中 → 入队 → TranslatorProvider.translate → TranslationCache.put（JSONL）
+  → Segmenter.reassemble（按本行骨架拼回控制符）
+  → LegacyEscapeCodec 控制码校验（逐项、按顺序、按字面）
+  → RESP
+```
+
+缓存：`<AppPaths.root>/cache/cache.ja-zh-Hans.jsonl`（默认
+`~/Library/Application Support/MochiBox/cache/`；`MOCHI_DATA_DIR` 可覆盖整个 root）。
+追加写、0600、启动时 `load()`，重启后命中。
+
+控制码段不进 key：`\C[2]赤い\C[0]` 在 XP / VX / VX Ace 三个工程里算出**同一个** key
+（只取 text 段），实测都是
+`sha256("rgss|ja|zh-Hans|p2|c:dialogue|g:0|赤い") = cdca5359…`。
+
+**为什么不用 hook 侧 1.5s 等待窗口**：RGSS 是单线程，hook 的 `request` 跑在游戏主线程上；
+把 1.5s 等待塞进 hook 等于每句冻结画面 1.5s（多行消息还会累加）。异步 + PENDING 只让
+首屏晚一拍：主线程最多等 0.2s，PENDING 的 1.5s 只是“同一句暂不重问”的截止时刻，不阻塞
+任何代码。两者实现量相当，但异步对游戏体验的伤害小一个量级。
+
+验证用 `Fixtures/mock_translate_server.mjs --mode slow --delay-ms 800`（让首屏必定超过 120ms，
+不靠时序碰运气），`--play-native` + `--provider openai --endpoint http://127.0.0.1:<port>`：
+
+| 版本 | 首遍（空缓存） | 二遍 / 重启 | 缓存统计 |
+|---|---|---|---|
+| XP | OCR `赤い`；`TIMEOUT → PENDING`、`LATE source=fresh` | OCR `译：赤い`；`RESP source=hit`；重启首屏 `译：赤い` | 1/1 → 重启 1/0（100%） |
+| VX | OCR `赤い`；`TIMEOUT → PENDING` | 重启 OCR `译：赤い`；`RESP source=hit` | 重启 100% |
+| VX Ace | OCR `赤い`；`TIMEOUT → PENDING` | 重启 OCR `译赤赤い`（OCR 把冒号并进字）；`RESP source=hit` | 重启 100% |
+
+控制符：桥日志 `RESP … text="\C[2]译:赤い\C[0]"`；mock 的 `requests.jsonl` 里 23 条已落盘请求
+（mock 计数 24，含收尾时 1 条未落盘）的 user content 只有 `赤い` / `こんにちは` / `魔物が来た` /
+`menyelamatkan dunia!` 等，**0 次**包含 `\C[` / `\N[` / `\V[` / `\G` / `\I[`。
+
+CP932 首屏：原始 CP932 工程（`/tmp/xp-run` 的 Map001）在“回空 RESP”的旧实现下 OCR 到
+`Script 'Window_Message' line 82 … invalid byte sequence in UTF-8`；改成
+`PENDING + 原文(UTF-8)` 后 OCR `こんにちは`，游戏不崩。这就是 PENDING 必须带载荷的原因。
 
 ## 9. 本地复现
 
@@ -381,6 +448,11 @@ cd /tmp/xp-run && ./shot /tmp/xp-run/hook-msg.png
 
 - ~~由 `GameLauncher` 在启动前把 hook 写到游戏可写目录，或使用 app 资源里的**绝对路径**注入
   `preloadScript`；退出时清理。~~ 已完成：绝对路径注入 + 退出按原字节还原。
-- 接真正的翻译来源（当前是 `RGSSBridge.testDictionary` 的 15 条测试词典）。
-- 服务端持久化连接、批量请求、控制符感知分段、失败指标与超时策略。
-- 只对白名单场景（对话、选项、滚动文本）开启，避免把菜单/调试文本也送进翻译管线。
+- ~~接真正的翻译来源（15 条测试词典）。~~ 已完成：`RGSSPipelineTranslator` 接现有
+  `TranslationPipeline` / `TranslationCache` / `TranslatorProvider`；控制符分段复用
+  `LegacyEscapeCodec`；缓存落盘、重启命中（§8.1）。
+- ~~控制符感知分段。~~ 已完成（只送 text 段 + 回填后逐项校验）。
+- 待做：服务端持久化连接 / 批量请求 / 失败指标；只对白名单场景（对话、选项、滚动文本）开启，
+  避免把菜单/调试文本也送进翻译管线。
+- 待做：把 RGSS 的**数据层**（Map / CommonEvent / Terms 的 401 文本）也预译进同一份缓存，
+  这样首次对话就能命中，而不是“首遍原文、次遍中文”。

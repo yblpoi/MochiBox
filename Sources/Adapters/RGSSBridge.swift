@@ -6,28 +6,52 @@
 //
 //  协议（UTF-8 文本，TAB 分隔，LF 结尾，payload 是 base64）：
 //    → TEXT\t<seq>\t<RGSS1|RGSS2|RGSS3>\t<base64(原文)>
-//    ← RESP\t<seq>\t<base64(译文)>
+//    ← RESP\t<seq>\t<base64(译文)>                      正常译文
+//    ← RESP\t<seq>\t<base64(原文的 UTF-8 版本)>\tPENDING  还没译好，先显示原文
 //
 //  三条硬约束：
 //    1. **端口不写死**：bind 到 127.0.0.1:0，由内核选端口，getSockName 读回实际值；
 //       调用方通过 MOCHI_RGSS_PORT 传给 mkxp-z 子进程。固定端口会在多实例/测试并行时打架。
 //    2. **150ms 内必须回**：hook 侧读超时是 0.2s。定时器设 120ms（实测 ~135ms 到客户端），
-//       没算完就回**空 RESP**，
-//       hook 把它当"这次不翻"并放行原文 —— 游戏主线程最多等 0.2s，不会卡住。
+//       没算完就回 **PENDING + 原文（UTF-8）**，
+//       hook 显示原文但不缓存 —— 游戏主线程最多等 0.2s，不会卡住。
 //    3. **任何失败都不影响游戏**：连不上 / 协议错 / 解码错 / 客户端断开，一律只写日志。
 //
-//  翻译来源：当前是**测试词典**（RGSSBridge.testDictionary，抄自
-//  Fixtures/mock_openai_server.mjs 的 15 条），只用于证明"读原文 → 回译文 → 渲染"这条通路。
-//  它不是生产翻译：词典外的文本原样返回。接 LLM 是下一步，替换 RGSSTranslating 的实现即可。
+//  翻译来源：**现有翻译管线**（RGSSPipelineTranslator → TranslationPipeline →
+//  TranslationCache / TranslatorProvider）。桥本身只认 RGSSTranslating 这个接缝。
+//
+//  **异步语义（刻意）**：缓存命中 → 120ms 内回中文；未命中 → 120ms 到点回
+//  **PENDING + 原文的 UTF-8 重编码**，后台继续请求并写缓存。第一遍显示原文、
+//  同一原文下一次出现（重绘 / 重新触发对话 / 重启后）才显示中文。不要为了
+//  "首屏就有中文"把这里改成同步等待 —— 那会把游戏主线程钉在网络请求上
+//  （hook 的读超时只有 0.2s，超时也只是放行原文）。
+//
+//  **PENDING 必须带原文**：不能回空（CP932 游戏原串会让这版 mkxp-z 的
+//  Window_Message 抛 "invalid byte sequence"），也不能回普通 RESP 带原文
+//  （hook 会把任何非 PENDING 的 RESP 当译文缓存，原文就被钉死一整局）。
 //
 
 import Foundation
 import Darwin
 
-/// 翻译来源的接缝。桥只依赖这一个方法，换 LLM 时不用改 socket / 协议 / 超时。
-protocol RGSSTranslating: AnyObject {
-    /// 返回 nil = 这个词条不认识，桥会把原文回给 hook（显示不变）。
-    func translate(_ text: String, version: String) -> String?
+/// 翻译来源的接缝。桥只依赖这一个方法，换实现时不用改 socket / 协议 / 超时。
+protocol RGSSTranslating: AnyObject, Sendable {
+    /// 返回 nil = 这次没有可用译文（未命中且后台未完成 / 跳过 / 失败），桥回 PENDING + 原文。
+    /// 这个方法必须是异步的：桥要在 120ms 内先回，后台结果写进缓存供下次命中。
+    func translate(_ text: String, version: String) async -> RGSSBridgeReply?
+}
+
+/// 一次可回给 hook 的译文，以及它来自缓存还是后台刚拿到的。
+///
+/// `source` 只用于日志：验证"第二遍才中文"靠的就是 hit / fresh 的计数。
+struct RGSSBridgeReply: Sendable {
+    enum Source: String, Sendable {
+        case cacheHit = "hit"
+        case fresh = "fresh"
+    }
+
+    var text: String
+    var source: Source
 }
 
 /// 打开失败时给调用方看的错误（不参与控制流，调用方只需决定"这次不注入 hook"）。
@@ -57,34 +81,13 @@ final class RGSSBridge: @unchecked Sendable {
         var responseDeadlineMs: Int = 120
         /// 与 hook 的默认日志同一个口径（/tmp），便于两边的行对着看。
         var logURL: URL = URL(fileURLWithPath: "/tmp/mochi-rgss-bridge.log")
-        var translationSourceName: String = "test-dictionary"
+        /// 只进日志：pipeline（真的有翻译来源） / none（本次只放行原文）。
+        var translationSourceName: String = "none"
     }
 
-    /// **测试词典，不是生产翻译来源**。
-    ///
-    /// 15 条全部来自 Fixtures/mock_openai_server.mjs（E2E 用的合成替身）。它只证明：
-    /// hook 能把真游戏里的原文送出来、桥能把中文送回去、Window_Message 能画出译文。
-    /// 词典以外的句子会原样返回 —— 报告里必须按这个口径说，不能包装成"已支持翻译"。
-    static let testDictionary: [String: String] = [
-        "魔物が来た": "魔物来了",
-        "こんにちは": "你好",
-        "勇者よ、目を覚ませ": "勇者啊，醒醒吧",
-        "おはよう": "早上好",
-        "ありがとう": "谢谢你",
-        "さようなら": "再见",
-        "戦闘開始": "战斗开始",
-        "回復した": "已恢复",
-        "アイテムを手に入れた": "获得了道具",
-        "セーブしますか？": "要保存吗？",
-        "はい": "是",
-        "いいえ": "否",
-        "ゲームタイトル": "游戏标题",
-        "経験値を獲得": "获得经验值",
-        "レベルアップ": "升级了"
-    ]
-
     private let config: Configuration
-    private let translator: RGSSTranslating
+    /// nil = 没有翻译来源：所有 TEXT 都回 PENDING + 原文（游戏照常跑，显示原文）。
+    private let translator: (any RGSSTranslating)?
 
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
@@ -103,10 +106,10 @@ final class RGSSBridge: @unchecked Sendable {
 
     init(
         configuration: Configuration = Configuration(),
-        translator: RGSSTranslating? = nil
+        translator: (any RGSSTranslating)? = nil
     ) {
         self.config = configuration
-        self.translator = translator ?? RGSSDictionaryTranslator(entries: RGSSBridge.testDictionary)
+        self.translator = translator
         try? FileManager.default.createDirectory(
             at: configuration.logURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -337,45 +340,85 @@ final class RGSSBridge: @unchecked Sendable {
         let gate = RequestGate()
         let deadline = DispatchTime.now() + .milliseconds(config.responseDeadlineMs)
 
-        // 120ms 到点还没算完：回空 RESP。hook 会把它当"这次不翻"并放行原文。
+        // 120ms 到点还没算完：回 PENDING（载荷是**原文的 UTF-8 重编码**）。
+        // 为什么不是空 RESP：RGSS1 的工程文本多为 CP932，当前 mkxp-z 构建会把游戏里的
+        // CP932 字符串按 UTF-8 处理，直接绘制会抛 "invalid byte sequence in UTF-8"。
+        // 把原文按 UTF-8 送回去让 hook 替换，既避免崩溃，又能让 hook 知道"这不是译文"、
+        // 不要写进它自己的进程内缓存（否则原文会被钉死一整局）。
+        //
+        // 翻译任务**不取消**：结果会写进 TranslationCache，同一原文下次直接命中。
         requestQueue.asyncAfter(deadline: deadline) { [weak self] in
             guard let self = self, gate.claim() else { return }
-            self.log("TIMEOUT seq=\(seq) -> 空 RESP")
-            self.write(seq: seq, text: nil, connection: connection)
+            self.log("TIMEOUT seq=\(seq) -> PENDING（后台请求中）")
+            self.write(seq: seq, text: text, pending: true, connection: connection)
         }
 
-        requestQueue.async { [weak self] in
-            guard let self = self else { return }
-            let translated = self.translator.translate(text, version: version)
-            guard gate.claim() else { return }
+        guard let translator = translator else {
+            // 没有翻译来源（例如从源码直接跑 build/MochiBox、没有设置环境）：
+            // 立刻回 PENDING，不留 120ms 的空等。
+            if gate.claim() {
+                log("NOSOURCE seq=\(seq) -> PENDING")
+                write(seq: seq, text: text, pending: true, connection: connection)
+            }
+            return
+        }
 
-            if let translated = translated, !translated.isEmpty {
-                self.log("RESP seq=\(seq) text=\(translated.debugDescription)")
-                self.write(seq: seq, text: translated, connection: connection)
+        Task { [weak self] in
+            let reply = await translator.translate(text, version: version)
+            guard let self = self else { return }
+
+            let claimed = gate.claim()
+            if let reply = reply, !reply.text.isEmpty {
+                if claimed {
+                    self.log("RESP seq=\(seq) source=\(reply.source.rawValue) text=\(reply.text.debugDescription)")
+                    self.write(seq: seq, text: reply.text, pending: false, connection: connection)
+                } else {
+                    // 已经回过 PENDING：这次结果不再发给 hook，但缓存里已经有了。
+                    self.log("LATE seq=\(seq) source=\(reply.source.rawValue) -> 已可命中")
+                }
+            } else if claimed {
+                // 未命中 / 跳过 / 失败：回 PENDING + 原文（UTF-8）。
+                // hook 会显示它但不缓存；下一次同一原文再问时，缓存里通常已经有译文。
+                self.log("MISS seq=\(seq) -> PENDING")
+                self.write(seq: seq, text: text, pending: true, connection: connection)
             } else {
-                // 词典不认识 ≠ 失败：回原文，hook 显示不变，也不会触发它的 2s 冷却。
-                self.log("MISS seq=\(seq) -> 原文")
-                self.write(seq: seq, text: text, connection: connection)
+                self.log("MISS seq=\(seq) -> 后台失败（原响应已超时）")
             }
         }
     }
 
-    private func write(seq: String, text: String?, connection: ClientConnection) {
-        let payload = (text ?? "").data(using: .utf8)?.base64EncodedString() ?? ""
-        let line = "RESP\t\(seq)\t\(payload)\n"
+    /// 4 字段协议：`RESP\t<seq>\t<base64>\tPENDING`。第 4 段省略 = 正常译文。
+    ///
+    /// 为什么 PENDING 也要带载荷：见 `respond` 里的编码说明 —— 空载荷会让 hook 放行
+    /// 游戏原串（CP932），而这版 mkxp-z 在 Window_Message 里按 UTF-8 处理它会崩。
+    private func write(seq: String, text: String, pending: Bool, connection: ClientConnection) {
+        let payload = text.data(using: .utf8)?.base64EncodedString() ?? ""
+        let suffix = pending ? "\tPENDING" : ""
+        let line = "RESP\t\(seq)\t\(payload)\(suffix)\n"
         connection.send(Data(line.utf8))
     }
 
     // MARK: - 解码
 
     /// RGSS3 是 UTF-8；RGSS1/2 的工程文本多为 CP932（日文）或 GB18030（汉化）。
-    /// base64 里是 Ruby 字符串的原始字节，先按 UTF-8 试，失败再按 Shift_JIS（CP932 超集）。
-    /// GB18030 这里解不了：那类工程会走 MISS 显示原文，不会乱码或崩溃。
+    /// base64 里是 Ruby 字符串的原始字节，按 UTF-8 → Shift_JIS（CP932 超集）→ GB18030 逐档试。
+    ///
+    /// 顺序有讲究：UTF-8 必须排第一（RGSS3 的 :E 字符串就是 UTF-8，且 CP932 字节流几乎
+    /// 不可能同时是合法 UTF-8）；GB18030 放最后，因为它几乎能解任何字节，放在前面会把
+    /// CP932 解成乱码。GB18030 用 CoreFoundation 的 GB_18030_2000（Foundation 没有直接常量）。
     private static func decode(_ data: Data) -> String? {
         if let text = String(data: data, encoding: .utf8) {
             return text
         }
         if let text = String(data: data, encoding: .shiftJIS) {
+            return text
+        }
+        let gb18030 = String.Encoding(
+            rawValue: CFStringConvertEncodingToNSStringEncoding(
+                CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+            )
+        )
+        if let text = String(data: data, encoding: gb18030) {
             return text
         }
         return nil
@@ -433,26 +476,6 @@ final class RGSSBridge: @unchecked Sendable {
     }
 }
 
-// MARK: - 词典实现
-
-final class RGSSDictionaryTranslator: RGSSTranslating {
-    private let entries: [String: String]
-
-    init(entries: [String: String]) {
-        self.entries = entries
-    }
-
-    func translate(_ text: String, version: String) -> String? {
-        // XP 的 message_text 末尾带换行（整段文本），VX/VX Ace 是逐行数组。
-        // 只剥尾部换行，不动首尾空格 —— 缩进是有意义的排版。
-        var key = text
-        while key.hasSuffix("\n") || key.hasSuffix("\r") {
-            key.removeLast()
-        }
-        return entries[key]
-    }
-}
-
 // MARK: - 连接 / 单次应答闸
 
 /// 一个客户端的写端。close 与 send 共用一把锁，避免 fd 号被复用时写到别的 socket。
@@ -502,7 +525,7 @@ private final class ClientConnection: @unchecked Sendable {
     }
 }
 
-/// 一次请求只允许一个应答：翻译先完成就回译文，超时先到就回空 RESP，后到的那个 claim 失败。
+/// 一次请求只允许一个应答：翻译先完成就回译文，超时先到就回 PENDING，后到的那个 claim 失败。
 private final class RequestGate: @unchecked Sendable {
     private let lock = NSLock()
     private var done = false
