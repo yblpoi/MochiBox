@@ -1,0 +1,35 @@
+[2026-11-02 23:43:16] socket probe: Socket.tcp=no TCPSocket=yes
+[2026-11-02 23:43:16] surfaces enabled: message,menu,choice,help,battle
+[2026-11-02 23:43:16] tracepoint armed; waiting for surface classes
+[2026-11-02 23:43:16] hooked menu: Window_Command#draw_item (trigger=tracepoint:Window_Command)
+[2026-11-02 23:43:16] hooked help: Window_Help#set_text (trigger=tracepoint:Window_Help)
+[2026-11-02 23:43:16] hooked message: Window_Message#start_message as RGSS2 (trigger=tracepoint:Window_Message)
+[2026-11-02 23:43:16] choice on RGSS2 has no separate entry; it rides message
+[2026-11-02 23:43:16] hooked battle: Window_BattleMessage#add_instant_text/replace_instant_text (trigger=tracepoint:Window_BattleMessage)
+[2026-11-02 23:43:16] tracepoint disabled (version=RGSS2)
+[2026-11-02 23:43:16] RESP seq=1 (pending) "New Game"
+[2026-11-02 23:43:16] PENDING (display original) "New Game"
+[2026-11-02 23:43:16] RESP seq=2 (pending) "Continue"
+[2026-11-02 23:43:16] PENDING (display original) "Continue"
+[2026-11-02 23:43:16] RESP seq=3 "译:Shutdown"
+[2026-11-02 23:43:46] RESP seq=4 (pending) "Item"
+[2026-11-02 23:43:46] PENDING (display original) "Item"
+[2026-11-02 23:43:46] RESP seq=5 (pending) "Skill"
+[2026-11-02 23:43:46] PENDING (display original) "Skill"
+[2026-11-02 23:43:46] RESP seq=6 (pending) "Equip"
+[2026-11-02 23:43:46] PENDING (display original) "Equip"
+[2026-11-02 23:43:47] RESP seq=7 (pending) "Status"
+[2026-11-02 23:43:47] PENDING (display original) "Status"
+[2026-11-02 23:43:47] RESP seq=8 (pending) "Save"
+[2026-11-02 23:43:47] PENDING (display original) "Save"
+[2026-11-02 23:43:47] RESP seq=9 (pending) "Game End"
+[2026-11-02 23:43:47] PENDING (display original) "Game End"
+[2026-11-02 23:43:49] RESP seq=10 "译:Item"
+[2026-11-02 23:43:49] RESP seq=11 "译:Skill"
+[2026-11-02 23:43:49] RESP seq=12 "译:Equip"
+[2026-11-02 23:43:49] RESP seq=13 "译:Status"
+[2026-11-02 23:43:49] RESP seq=14 "译:Save"
+[2026-11-02 23:43:49] RESP seq=15 "译:Game End"
+[2026-11-02 23:44:01] RESP seq=16 (pending) "Restores 500 HP of one character."
+[2026-11-02 23:44:01] PENDING (display original) "Restores 500 HP of one character."
+[2026-11-02 23:44:03] RESP seq=17 "译:Restores 500 HP of one character."

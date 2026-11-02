@@ -27,18 +27,18 @@ hook 按“有语义的上层入口”分面，不逐字拦截绘制。五个面
 | 面 | 入口 | XP | VX | VX Ace | 证据 |
 |---|---|---|---|---|---|
 | message | `Window_Message#refresh` / `#start_message` / `#process_all_text` | 独立 | 独立 | 独立 | 真机截图（XP §7.1；VX §8.1） |
-| menu | `Window_Command#draw_item` | 独立 | 独立 | 独立 | 假类断言 |
+| menu | `Window_Command#draw_item` | 独立 | 独立 | 独立 | 真机截图（VX，[`evidence/rgss-surfaces-2026-11-02/`](evidence/rgss-surfaces-2026-11-02/README.md)）；XP / VX Ace 为假类断言 |
 | choice | `Window_ChoiceList#start` / `#draw_item` | 并入 message | 并入 message | 独立 | 假类断言 |
-| help | `Window_Help#set_text` | 独立 | 独立 | 独立 | 假类断言 |
+| help | `Window_Help#set_text` | 独立 | 独立 | 独立 | 真机截图（VX，[`evidence/rgss-surfaces-2026-11-02/`](evidence/rgss-surfaces-2026-11-02/README.md)）；XP / VX Ace 为假类断言 |
 | battle | `Window_BattleMessage#add_instant_text` / `#replace_instant_text`；`Window_BattleLog#add_text` / `#replace_text` | 并入 message | 独立 | 独立 | 假类断言 |
 
 “独立”指该版本有单独的类/方法，hook 直接挂它；“并入 message”指该版本没有独立入口，
 文本走 `Window_Message` 的入口，hook 在消息面里一并处理（日志会写
 `choice on RGSS2 has no separate entry; it rides message`）。
 
-**choice / battle 目前只有假类断言**：当前 VX 测试工程的 `Map001` 事件表为空（没有 102
-「显示选项」事件），`Troops.rvdata` 的敌群成员也为空、没有战斗图，触发不了真实的选择界面和
-战斗界面。补这两面需要带事件/敌群成员的工程，不能用假类断言冒充真机证据。
+VX 的 menu / help 已有真机截图；**choice / battle 仍然只有假类断言**：当前 VX 测试工程的
+`Map001` 事件表为空（没有 102「显示选项」事件），`Troops.rvdata` 的敌群成员也为空、没有战斗图，
+触发不了真实的选择界面和战斗界面。补这两面需要带事件/敌群成员的工程，不能用假类断言冒充真机证据。
 
 **不 hook `Window_Base#draw_text`。** 它是逐字调用的：一次 `draw_text` 只拿到一个字，
 单字送翻译会丢语义（`こ` / `ん` / `に` 各翻一次），请求量也按字符数放大。hook 只认

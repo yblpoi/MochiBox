@@ -1,0 +1,50 @@
+=== menu.png  size=1088x896
+  observations=42
+  [conf 0.50] (167,19) VX Test
+  [conf 0.30] (41,107) 择iItern
+  [conf 0.30] (41,153) 峄：Skill
+  [conf 0.30] (41,201) 择：Equip
+  [conf 0.30] (43,249) 峰：Status
+  [conf 0.30] (43,297) 峰：Save
+  [conf 0.30] (41,346) 择：Garne End
+  [conf 0.30] (235,827) 0
+  [conf 0.30] (561,131) Radpn
+  [conf 0.50] (561,181) LV
+  [conf 0.30] (653,179) 1
+  [conf 0.30] (563,322) Ulrika
+  [conf 0.50] (561,373) LV
+  [conf 0.30] (653,371) 1
+  [conf 0.50] (561,515) Berinett
+  [conf 0.50] (561,567) LV
+  [conf 0.30] (653,567) 1
+  [conf 0.30] (560,706) YIval
+  [conf 0.50] (561,757) LV
+  [conf 0.30] (653,757) 1
+  [conf 0.30] (801,131) Warrior
+  [conf 0.30] (801,179) HI 466/
+  [conf 0.30] (887,215) 70/1
+  [conf 0.30] (984,179) 466
+  [conf 1.00] (1003,227) 70
+  [conf 0.30] (801,323) Paladin
+  [conf 0.30] (801,368) HI 594/
+  [conf 0.30] (798,413) MII
+  [conf 0.30] (886,407) 70/1
+  [conf 0.50] (987,371) 594
+  [conf 1.00] (1001,419) 70
+  [conf 1.00] (801,515) Priest
+  [conf 0.30] (798,607) ML
+  [conf 0.50] (875,563) 391/
+  [conf 0.30] (892,602) 98/1
+  [conf 0.30] (987,563) 391
+  [conf 0.50] (1004,611) 98
+  [conf 0.50] (801,707) Magician
+  [conf 0.30] (801,753) HI 275/
+  [conf 1.00] (985,755) 275
+  [conf 0.30] (800,801) MII
+  [conf 0.30] (874,795) 107/1 407
+=== help.png  size=1088x896
+  observations=4
+  [conf 0.30] (165,19) VX Test
+  [conf 0.30] (40,99) 译：Resrores 5og HP of one characrer.
+  [conf 0.50] (81,219) Potion
+  [conf 0.30] (468,221) ：1

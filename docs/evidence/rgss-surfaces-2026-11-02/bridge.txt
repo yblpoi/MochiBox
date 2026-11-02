@@ -1,0 +1,62 @@
+[2026-11-02 23:43:16] LISTEN 127.0.0.1:49825 source=pipeline deadline=120ms
+[2026-11-02 23:43:16] ACCEPT 127.0.0.1:49826
+[2026-11-02 23:43:16] TEXT seq=1 ver=RGSS2 text="New Game"
+[2026-11-02 23:43:16] TIMEOUT seq=1 -> PENDING（后台请求中）
+[2026-11-02 23:43:16] ACCEPT 127.0.0.1:49827
+[2026-11-02 23:43:16] TEXT seq=2 ver=RGSS2 text="Continue"
+[2026-11-02 23:43:16] LATE seq=1 source=fresh -> 已可命中
+[2026-11-02 23:43:16] TIMEOUT seq=2 -> PENDING（后台请求中）
+[2026-11-02 23:43:16] ACCEPT 127.0.0.1:49829
+[2026-11-02 23:43:16] TEXT seq=3 ver=RGSS2 text="Shutdown"
+[2026-11-02 23:43:16] LATE seq=2 source=fresh -> 已可命中
+[2026-11-02 23:43:16] RESP seq=3 source=fresh text="译:Shutdown"
+[2026-11-02 23:43:46] ACCEPT 127.0.0.1:49858
+[2026-11-02 23:43:46] TEXT seq=4 ver=RGSS2 text="Item"
+[2026-11-02 23:43:46] TIMEOUT seq=4 -> PENDING（后台请求中）
+[2026-11-02 23:43:46] ACCEPT 127.0.0.1:49859
+[2026-11-02 23:43:46] TEXT seq=5 ver=RGSS2 text="Skill"
+[2026-11-02 23:43:46] LATE seq=4 source=fresh -> 已可命中
+[2026-11-02 23:43:46] TIMEOUT seq=5 -> PENDING（后台请求中）
+[2026-11-02 23:43:46] ACCEPT 127.0.0.1:49863
+[2026-11-02 23:43:46] LATE seq=5 source=fresh -> 已可命中
+[2026-11-02 23:43:46] TEXT seq=6 ver=RGSS2 text="Equip"
+[2026-11-02 23:43:46] TIMEOUT seq=6 -> PENDING（后台请求中）
+[2026-11-02 23:43:46] ACCEPT 127.0.0.1:49864
+[2026-11-02 23:43:46] LATE seq=6 source=fresh -> 已可命中
+[2026-11-02 23:43:46] TEXT seq=7 ver=RGSS2 text="Status"
+[2026-11-02 23:43:47] TIMEOUT seq=7 -> PENDING（后台请求中）
+[2026-11-02 23:43:47] ACCEPT 127.0.0.1:49865
+[2026-11-02 23:43:47] TEXT seq=8 ver=RGSS2 text="Save"
+[2026-11-02 23:43:47] LATE seq=7 source=fresh -> 已可命中
+[2026-11-02 23:43:47] TIMEOUT seq=8 -> PENDING（后台请求中）
+[2026-11-02 23:43:47] ACCEPT 127.0.0.1:49866
+[2026-11-02 23:43:47] LATE seq=8 source=fresh -> 已可命中
+[2026-11-02 23:43:47] TEXT seq=9 ver=RGSS2 text="Game End"
+[2026-11-02 23:43:47] TIMEOUT seq=9 -> PENDING（后台请求中）
+[2026-11-02 23:43:47] LATE seq=9 source=fresh -> 已可命中
+[2026-11-02 23:43:49] ACCEPT 127.0.0.1:49869
+[2026-11-02 23:43:49] TEXT seq=10 ver=RGSS2 text="Item"
+[2026-11-02 23:43:49] RESP seq=10 source=hit text="译:Item"
+[2026-11-02 23:43:49] ACCEPT 127.0.0.1:49870
+[2026-11-02 23:43:49] TEXT seq=11 ver=RGSS2 text="Skill"
+[2026-11-02 23:43:49] RESP seq=11 source=hit text="译:Skill"
+[2026-11-02 23:43:49] ACCEPT 127.0.0.1:49871
+[2026-11-02 23:43:49] TEXT seq=12 ver=RGSS2 text="Equip"
+[2026-11-02 23:43:49] RESP seq=12 source=hit text="译:Equip"
+[2026-11-02 23:43:49] ACCEPT 127.0.0.1:49872
+[2026-11-02 23:43:49] TEXT seq=13 ver=RGSS2 text="Status"
+[2026-11-02 23:43:49] RESP seq=13 source=hit text="译:Status"
+[2026-11-02 23:43:49] ACCEPT 127.0.0.1:49873
+[2026-11-02 23:43:49] TEXT seq=14 ver=RGSS2 text="Save"
+[2026-11-02 23:43:49] RESP seq=14 source=hit text="译:Save"
+[2026-11-02 23:43:49] ACCEPT 127.0.0.1:49874
+[2026-11-02 23:43:49] TEXT seq=15 ver=RGSS2 text="Game End"
+[2026-11-02 23:43:49] RESP seq=15 source=hit text="译:Game End"
+[2026-11-02 23:44:01] ACCEPT 127.0.0.1:49884
+[2026-11-02 23:44:01] TEXT seq=16 ver=RGSS2 text="Restores 500 HP of one character."
+[2026-11-02 23:44:01] TIMEOUT seq=16 -> PENDING（后台请求中）
+[2026-11-02 23:44:01] LATE seq=16 source=fresh -> 已可命中
+[2026-11-02 23:44:03] ACCEPT 127.0.0.1:49886
+[2026-11-02 23:44:03] TEXT seq=17 ver=RGSS2 text="Restores 500 HP of one character."
+[2026-11-02 23:44:03] RESP seq=17 source=hit text="译:Restores 500 HP of one character."
+[2026-11-02 23:44:17] STOP port=49825
