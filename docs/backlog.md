@@ -318,3 +318,20 @@ D18 = `T-014-I` / `T-015-I` / `T-016-I`（`Tests/e2e/cases/contract/03_rpc_table
 > 仍按 `OPEN` 计；本条的 CLOSED 只覆盖"换族名 + 回退链"这一半，复核时别把两者混为一谈。
 > 原版 MTool 的做法与字体清单见 `docs/re-findings.md §6`。
 
+---
+
+## 十三、2026-11-06 补登记（RGSS 预译 + Win32API shim 的残留验证）
+
+两条功能已落地并有确定性测试，残留项是**真实样本/真实后端**上的证据缺口，不是未修的缺陷。
+判定口径见 [`win32-shim.md`](win32-shim.md) §7.3 与 [`known-limits.md`](known-limits.md) L4。
+
+| ID | 一句话 | 位置 | 级别 | 状态 |
+|---|---|---|---|---|
+| **D27** | RGSS 启动预译：真实后端证据已补齐（2026-11-06）。预热缓存 + `--provider openai`（DeepSeek `deepseek-flash`）实跑：mkxp-z 首帧 `RESP seq=1 source=hit`、桥日志无 PENDING；全新数据目录实跑：`RGSSPrewarm` 日志 `files=12 texts=440 selected=355 cacheHit=0 submitted=355 elapsedMs=39`，355 条译文约 2s 落盘，纯度审计 0 条脏数据；直通对照 `MISS seq=1 -> PENDING`；加 6s 启动延迟后首句 `source=hit`（因果闭环，`rgss-cache entries=355 hits=1`）。仅剩**时序边界**：autorun 型工程 1s 内弹首句来不及，标题画面型工程首句即命中（见 L4） | `Sources/Domain/RGSSPrewarm.swift`、`Sources/Domain/SessionController.swift`（`startPrewarm`）、`docs/architecture.md` §5.8 | P0（首句体验的最终验收） | `CLOSED`（实跑证据已采；时序边界单列） |
+| **D28** | Win32API shim：API 调用层已不崩（mkxp-z 实跑证据），但**没有任何商业 XP/VX/VX Ace 游戏样本**；内存指针、注册表实际读写、MCI 播放、按键轮询仍不模拟 | `Resources/rgss/mochi_win32_shim.rb`、`docs/win32-shim.md` §6 | P1（商业游戏兼容性） | `OPEN`（缺商业样本） |
+
+> D27 的复现命令：`MOCHI_DATA_DIR=<dir> build/MochiBox.app/Contents/MacOS/MochiBox --play-native <游戏根> --provider openai --endpoint https://api.deepseek.com --model deepseek-flash --api-key <key> --duration 150`；
+> 核对会话日志的 `[RGSSPrewarm] 启动预译结束` 行与桥日志 `source=hit`。
+> D28 的下一步只能靠样本：拿到游戏后在日志里筛 `[win32] unknown api`，按命中频次补 handler。
+
+

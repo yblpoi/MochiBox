@@ -277,6 +277,9 @@ cp "$ROOT/Resources/agent_mvmz.js" "$APP/Contents/Resources/agent_mvmz.js"
 # 不能出一个"看起来构建成功、XP/VX 却永远不翻译"的包。
 mkdir -p "$APP/Contents/Resources/rgss"
 cp "$ROOT/Resources/rgss/mochi_rgss_hook.rb" "$APP/Contents/Resources/rgss/mochi_rgss_hook.rb"
+# Win32API shim：hook 在文件顶部按 __dir__ 加载它，两者必须同目录;hook 缺失 shim
+# 只是没有 shim，shim 缺失 hook 仍工作（load 失败被 rescue 记日志）。
+cp "$ROOT/Resources/rgss/mochi_win32_shim.rb" "$APP/Contents/Resources/rgss/mochi_win32_shim.rb"
 cp "$ROOT/Design/mochibox-icon/Mochibox.icns" "$APP/Contents/Resources/Mochibox.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 

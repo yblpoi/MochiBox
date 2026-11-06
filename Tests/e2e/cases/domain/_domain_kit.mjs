@@ -70,6 +70,22 @@ export const SRC = {
     s('Sources/Domain/GlossarySeed.swift'),
     s('Sources/Domain/FullTextQuality.swift'),
     s('Sources/Infra/GlossaryStore.swift')
+  ],
+  // RGSS（XP/VX/VX Ace）启动预译：真跑 scan + 管线 + 缓存，所以要 Marshal 读取层、
+  // 桥接协议（RGSSPipelineEnvironment 引用它）与 key 的**唯一**公式所在文件。
+  // 少一个都会让预译改用另一套 key 或干脆编不过 —— 别把这份清单抄进用例里。
+  prewarm: () => [
+    ...SRC.pipeline(),
+    s('Sources/Adapters/Marshal/MarshalValue.swift'),
+    s('Sources/Adapters/Marshal/MarshalReader.swift'),
+    s('Sources/Adapters/Marshal/MarshalWriter.swift'),
+    s('Sources/Adapters/Marshal/RGBSTextEncoding.swift'),
+    s('Sources/Adapters/Marshal/RGBSGameFile.swift'),
+    s('Sources/Adapters/Marshal/RGBSTextExtractor.swift'),
+    s('Sources/Adapters/Marshal/RGSSDataModel.swift'),
+    s('Sources/Adapters/RGSSBridge.swift'),
+    s('Sources/Adapters/RGSSPipelineTranslator.swift'),
+    s('Sources/Domain/RGSSPrewarm.swift')
   ]
 };
 

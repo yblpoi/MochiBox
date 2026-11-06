@@ -87,36 +87,62 @@ actor RGSSPipelineTranslator: RGSSTranslating {
 
     // MARK: 接口
 
-    func translate(_ text: String, version: String) async -> RGSSBridgeReply? {
-        await installHandlerIfNeeded()
-
-        // 控制符分段：只把 .text 段送翻译。空行 / 纯控制符直接不翻。
-        let skeleton = LegacyEscapeCodec.skeleton(raw: text, engineFamily: Self.engineFamily)
+    /// raw 原文 → 管线请求项。**运行时链路与预译（RGSSPrewarm）共用的唯一公式**。
+    ///
+    /// 预译若自己拼一遍 key，会漏掉术语（glossary）从而算出不同的 TranslationProfile：
+    /// 同一句在启动时预译过的 key 与运行时请求的 key 不相等，缓存永远命不中 —— 等于
+    /// 白翻一遍还多付一次 API 费用。所以抽到 static，两条链路都只能调它。
+    ///
+    /// 返回 nil = 没有可翻译的 text 段（空串 / 纯控制符 / 空行），调用方按“不翻”处理：
+    /// 这类输入既不该入队，也不该写缓存。
+    nonisolated static func makeRequestItem(
+        raw: String,
+        srcLang: String,
+        tgtLang: String,
+        glossaryBox: GlossaryBox?
+    ) -> TranslationRequestItem? {
+        // 控制符分段：只把 .text 段送翻译。
+        let skeleton = LegacyEscapeCodec.skeleton(raw: raw, engineFamily: engineFamily)
         guard Segmenter.textSegmentCount(skeleton) > 0 else {
             return nil
         }
         let joined = Segmenter.joinForBackend(skeleton)
         let category = TranslationCategory.dialogue
         // 术语命中要与实时链路同源：同一句在两条链路里算出同一个 profile，才能共享缓存。
-        let hints = environment.glossaryBox?.pairs(
+        let hints = glossaryBox?.pairs(
             in: joined,
             includeSingleChar: category.allowsSingleCharTerms
         ) ?? []
         let profile = TranslationProfile.id(category: category, pairs: hints)
         let key = Segmenter.cacheKey(
-            engineFamily: Self.engineFamily,
-            srcLang: environment.srcLang,
-            tgtLang: environment.tgtLang,
+            engineFamily: engineFamily,
+            srcLang: srcLang,
+            tgtLang: tgtLang,
             segments: skeleton,
             profile: profile
         )
-        let item = TranslationRequestItem(
+        return TranslationRequestItem(
             key: key,
             text: joined,
             segments: skeleton,
             category: category,
             glossary: hints
         )
+    }
+
+    func translate(_ text: String, version: String) async -> RGSSBridgeReply? {
+        await installHandlerIfNeeded()
+
+        guard let item = Self.makeRequestItem(
+            raw: text,
+            srcLang: environment.srcLang,
+            tgtLang: environment.tgtLang,
+            glossaryBox: environment.glossaryBox
+        ) else {
+            return nil
+        }
+        let skeleton = item.segments
+        let key = item.key
 
         switch await resolve(item: item, skeleton: skeleton, raw: text) {
         case .reply(let reply):

@@ -35,3 +35,19 @@ v0.6.0（**V0.6：新增 §3.4 AC-9 修改器 / AC-10 全文翻译的验收口�
 - **2026-10-23 文档校正**：版本号 v0.3.4 → v0.6.0；新增 §3.4（AC-9/AC-10）；交付范围改指 V0.6；原 §3.4 P2 顺延为 §3.5
 - **2026-11-02 状态校正**：P2-01（RGSS XP/VX/VX Ace）标记为**已落地**（`mkxp-z` 自编译版接入、可启动；Ruby 层实时 hook 未做）；§A.1 的 `supportLevel → UI` 映射补展示层例外（有内置后端时显示「可启动（内置运行时）」）。`supportLevel` 枚举与识别契约不变
 - **2026-11-02 后续进展（补充上条，不改写历史条目）**：上条记的「Ruby 层实时 hook 未做」已完成——`Resources/rgss/mochi_rgss_hook.rb` 经 `preloadScript` 注入，按语义上层入口分**五个面**（`message` / `menu` / `choice` / `help` / `battle`），默认全开，可用 `MOCHI_RGSS_SURFACES` 收窄或设为 `none` 只做原文直通；XP / VX / VX Ace 分别挂 `Window_Message#refresh` / `#start_message` / `#process_all_text`，翻译走现有管线，首屏超时回 PENDING + 原文、不阻塞游戏主线程。**证据等级需分开看**：VX 的 message / menu / help 有真机截图，choice / battle 及 XP / VX Ace 的 menu / help 仍为假类断言（缺带事件/敌群成员的测试工程）。协议、分面清单与实测边界见 [`docs/rgss-text-channel.md`](rgss-text-channel.md)
+- **2026-11-06 RGSS 数据层预译落地**：新增 `Sources/Domain/RGSSPrewarm.swift` —— 游戏启动后以 detached Task
+  只读扫描 `Data/`（`System` → `CommonEvents` → `Map*` → 可选 `Troops` → 其它数据库），按运行时同一 cacheKey
+  公式（`RGSSPipelineTranslator.makeRequestItem`）逐条 `SkipRules → cache.get → submit(.low)`，让首句显示前
+  缓存里已有译文。`SessionController` 在 launch/attach 之后启动、`stop()` 与关闭翻译时取消，失败只降级为运行时翻译。
+  设置新增 `prewarmEnabled`(true) / `maxPrewarmSegments`(3000) / `prewarmIncludeTroops`(false)，`schemaVersion` 仍为 2；
+  UI 在数据补丁分组加开关。**证据等级**：domain 套件 16 case / 520 断言（其中 D23 单独 81 条：首句同 key 命中、
+  缓存纯度、不阻塞、provider 失败降级、截断与设置闸门）+ `bash Scripts/build.sh` 通过；真实 `/tmp/xp-run` XP 工程
+  离线扫描 12 文件 / 441 候选；**GUI 首句命中的实跑日志尚未采集**（测试 + 离线扫描证据，非实跑证据）。
+  覆盖边界见 [`known-limits.md`](known-limits.md) L4。
+- **2026-11-06 RGSS 预译真实后端证据 + CLI `--model`（补充上条）**：①修正 XP 整段 key 形状——Interpreter 是
+  `message_text = 101 首行 + "\n"`、401 以及 **102 选项**都 `+= text + "\n"`，必须按 `+ "\n"` 累积（带尾随换行），
+  `join("\n")` 会必 miss；②`--play-native` 补装预译（此前 CLI 路径根本没接），并新增 `--model`（白名单 + help + usage），
+  因为 Settings 默认 `gpt-4o-mini` 对 DeepSeek 直接 400；③实跑证据：全新数据目录 + 真 key → `files=12 texts=440
+  selected=355 cacheHit=0 submitted=355 elapsedMs=39`，译文约 2s 落盘、纯度审计 0 脏条；预热缓存后 mkxp-z 首帧
+  `source=hit`（桥日志无 PENDING），直通对照 `MISS -> PENDING`；④边界：autorun 工程 1s 内弹首句仍首遍原文（时序，
+  非接线），标题画面型首句即命中。

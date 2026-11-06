@@ -216,7 +216,7 @@ XP / VX 两个外部样本**事件层**为空（Map 的 `@events` 空、`CommonE
 ## 九、已知风险
 
 - EasyRPG 的 PO 只覆盖预翻译，无逐句回调、无作弊接口；CJK 字体需随包提供。
-- mkxp-z 跑不动依赖 Win32API / 外部 DLL 的国产游戏。
+- ~~mkxp-z 跑不动依赖 Win32API / 外部 DLL 的国产游戏。~~ 2026-11-06 起有纯 Ruby shim：preload 阶段 reopen `Win32API.new`，覆盖 kernel32 / user32 / winmm / version / gdi32 / advapi32 的常用 API，未知 API 返回安全默认且不崩；**不加载真实 DLL**，内存 / 注册表 / MCI 播放 / 按键语义仍不模拟，商业游戏未实测。见 [`win32-shim.md`](win32-shim.md)。
 - mkxp-z / EasyRPG 是**独立 SDL 窗口**，塞不进 WKWebView，只能"独立窗口 + 透明浮层"。SDL3 子进程可被 `Process` 拉起并获得焦点，但不能跨进程挂子窗口，需 `CGWindowList` / Accessibility 取 frame + 独立 floating `NSWindow`；裸二进制无 Dock/菜单，需最小 `.app` 壳或 `LSUIElement`。
 - `lcf2xml` → `edb` → `ldb` **不字节保真**（未改动的 GBK 行也可能换码），XML 只能检视，写回必须二进制原地改；`LDB_Reader::Save` 会把默认值显式写出，体积会变大（883B → 2.0K）。
 - 回写前必须确认 `db.system.ldb_id`：writer 由它决定写不写 2003-only 段，`ldb_id=0` 时 `Save` 返回成功但 `0x1D`/`0x1E`/`0x1F` 直接消失，且无法从 chunk 反推。
@@ -225,7 +225,7 @@ XP / VX 两个外部样本**事件层**为空（Map 的 `@events` 空、`CommonE
 - mkxp-z 已端到端打通：`forcefallback` 全源码构建 2586/2586（约 10 分钟），构建产物 42,387,520 B（40.4 MiB）、strip 后分发 35,513,696 B（33.9 MiB）、minos 13.0、`otool -L` 里 `/opt/homebrew` 计数 **0**；三版默认脚本集都已跑通（XP：标题→New Game→Map001→事件弹两行中文→菜单→行走 `Step Count` 0→5；VX：标题→地图→菜单→行走；VX Ace：标题→New Game→开场文本→行走，坐标 `(3,5)→(7,5)→(7,7)`），ANGLE→Metal 正常。两条限制（均已作为负结论关闭，见 [known-limits.md#L2](known-limits.md#L2) / [known-limits.md#L3](known-limits.md#L3)）：① 设置菜单要 `macos/views/meson.build:13` 的 `ibtool`（只有完整 Xcode 提供）。2026-11-02 在 Xcode 许可证/首启组件就位后用真 `ibtool` 重建，F1 设置菜单**已实测可用**（L2 已销）；只有 CLT 的机器仍会退化成「菜单不可用」。② Ruby 只能 3.1.3（仓库只有 `ruby-3.1.wrap`）。**老 RGSS 的 1.8 语义风险**已对**默认脚本集**实测消解（三版都在 Ruby 3.1.3 上跑通），但**第三方 / 商业脚本**仍未验证——只影响运行时兼容，不影响构建。官方无 macOS 二进制（0 release），CI 目标 11.0，自建可改 13.0。
 - **mkxp-z 是自建二进制**：`vendor/mkxpz/mochibox-macos-fixes.patch` 共 **3 个** macOS 补丁（字体固定、`iconv_open` 失败防护、`PHYSFS_stat` 失败分支），再加上 `ibtool` 编 `settingsmenu.nib` 这一步（要完整 Xcode）；上游没有官方 macOS 二进制可依赖。
 - **分发体积**：整包 `.app` 约 **77 MB**（EasyRPG 33.9 MB + strip 后 mkxp-z 33.8 MiB + 产品本体 7.3 MB；strip 前 83 MB），显著大于纯 MV/MZ 版本。
-- **未验证**：除 TestGame-2000 之外的第三方 LDB / LMT / LMU、`LSD` 存档、**任何商业游戏**（现有 fixture 都是测试 / 合成工程；依赖 Win32API 与外部 DLL 的国产游戏仍跑不动）、Wine 路线。
+- **未验证**：除 TestGame-2000 之外的第三方 LDB / LMT / LMU、`LSD` 存档、**任何商业游戏**（现有 fixture 都是测试 / 合成工程；依赖 Win32API 的国产游戏已有 API 层 shim（见 [`win32-shim.md`](win32-shim.md)），但真实商业游戏仍未实测，依赖外部 DLL 内存语义的仍跑不动）、Wine 路线。
 - **已实测到交互层**：XP / VX / VX Ace 的 mkxp-z 链路都过了标题、地图、菜单与行走；XP 有 `Step Count` 读数，VX Ace 有坐标读数，VX 只有像素位移证据。证据强度（A / A-）与复现步骤见 [`rpgmaker-runtime-verification.md`](rpgmaker-runtime-verification.md)。
 - **脚本仍是限定条件**：VX 相对官方 EN 默认集 **94/95 段逐字节一致**、`Game_Interpreter` 差 **2 行**（社区修补）；VX Ace 的 129 段来自 CC0 工程，只有与工程原文件的逐段比对 + 结构审计，**没有官方安装副本的 byte-diff**。
 

@@ -19,6 +19,9 @@ enum AttachCLI {
         var port: Int = 0
         var provider: String = "passthrough"
         var endpoint: String = ""
+        /// --model <id>：--provider openai 时的模型名。缺省用 Settings() 的默认值
+        /// （CLI 不读用户 settings.json，真后端探针必须能显式指定，否则会被默认模型 400 拒掉）。
+        var model: String = ""
         var apiKey: String = ""
         var out: String?
         var screenshot: String?
@@ -119,6 +122,7 @@ enum AttachCLI {
 
         options.provider = value(of: "--provider") ?? "passthrough"
         options.endpoint = value(of: "--endpoint") ?? ""
+        options.model = value(of: "--model") ?? ""
         options.apiKey = value(of: "--api-key")
             ?? ProcessInfo.processInfo.environment["MOCHI_OPENAI_KEY"]
             ?? "test-key"
@@ -169,7 +173,7 @@ enum AttachCLI {
             + "      MochiBox --play <游戏目录> [--provider passthrough|openai] [--endpoint <url>] [--api-key <k>] "
             + "[--out <path.jsonl>] [--screenshot <path.png>] [--duration <sec>] [--headless] [--browser <可执行文件路径>] "
             + "[--kernel embedded|chromium] [--close-after <秒>] [--control <socket 路径>]（--control 需 MOCHI_E2E=1）\n"
-            + "      MochiBox --play-native <游戏目录> [--provider passthrough|openai] [--duration <sec>]"
+            + "      MochiBox --play-native <游戏目录> [--provider passthrough|openai] [--model <id>] [--duration <sec>]"
     }
 
     /// `--control` 的门禁（E2E 专用通道）：**没有 `MOCHI_E2E=1` 就 exit 2**。
@@ -238,6 +242,7 @@ enum AttachCLI {
         var settings = Settings()
         settings.backendType = (options.provider == "openai") ? .openai : .passthrough
         settings.endpoint = options.endpoint
+        if !options.model.isEmpty { settings.model = options.model }
         settings.allowSendTextToBackend = true
         let credentials = Credentials(apiKey: options.apiKey, deeplApiKey: options.apiKey)
         let provider = TranslationProviderFactory.make(settings: settings, credentials: credentials)
@@ -933,13 +938,14 @@ enum AttachCLI {
     private static func makeRGSSPipelineEnvironment(
         options: Options,
         gameRoot: URL
-    ) async -> (RGSSPipelineEnvironment, URL) {
+    ) async -> (RGSSPipelineEnvironment, URL, Settings) {
         let paths = AppPaths.shared
         paths.ensureDirectories()
 
         var settings = Settings()
         settings.backendType = (options.provider == "openai") ? .openai : .passthrough
         settings.endpoint = options.endpoint
+        if !options.model.isEmpty { settings.model = options.model }
         settings.allowSendTextToBackend = true
         let credentials = Credentials(apiKey: options.apiKey, deeplApiKey: options.apiKey)
 
@@ -985,7 +991,7 @@ enum AttachCLI {
             timeoutSec: max(10, settings.timeoutSec * 3),
             log: sessionLog
         )
-        return (environment, cacheURL)
+        return (environment, cacheURL, settings)
     }
 
     /// 原生运行时是**单进程**：没有 CDP、没有静态服务、没有页面 Agent。
@@ -1007,7 +1013,7 @@ enum AttachCLI {
         // RGSS 文本桥的翻译来源：与产品路径同一套 Settings / Credentials / TranslationCache /
         // TranslationPipeline。`--provider` / `--endpoint` / `--api-key` 在这里第一次真正
         // 作用到 mkxp-z（旧实现只把它们用在 `--play` 的浏览器路径上，原生运行时被忽略）。
-        let (rgssEnvironment, cacheURL) = await makeRGSSPipelineEnvironment(options: options, gameRoot: gameRoot)
+        let (rgssEnvironment, cacheURL, nativeSettings) = await makeRGSSPipelineEnvironment(options: options, gameRoot: gameRoot)
         await launcher.configureRGSSBridge(rgssEnvironment)
         Self.printFlush("rgss: source=pipeline cache=\(cacheURL.path)")
         Self.printFlush("rgss: log=\(rgssEnvironment.log?.fileURL?.path ?? "-")")
@@ -1037,6 +1043,19 @@ enum AttachCLI {
                 reason: detection.reason
             )
             let handle = try await launcher.launch(entry: entry, gameRoot: gameRoot, log: nil)
+            // 与产品路径（SessionController.startPrewarm）一致：启动后立刻后台预译，
+            // 让「首遍原文」在真实 mkxp-z 上也能变成缓存命中。--provider passthrough /
+            // 预译关闭时 skipReason 非 nil，这里不建 Task。
+            var prewarmTask: Task<Void, Never>?
+            if RGSSPrewarm.skipReason(settings: nativeSettings) == nil {
+                prewarmTask = Task.detached(priority: .utility) {
+                    _ = await RGSSPrewarm.run(
+                        environment: rgssEnvironment,
+                        gameRoot: gameRoot,
+                        options: RGSSPrewarm.Options(settings: nativeSettings)
+                    )
+                }
+            }
             // **新增行**，不改 `play: http=`；`pid` 是后续 `pgrep` / 取证脚本的唯一凭据。
             // backend 取后端枚举的 rawValue（easyrpg / mkxpz），不是引擎名。
             Self.printFlush("play: backend=\(backend.rawValue) pid=\(handle.pid)")
@@ -1052,6 +1071,8 @@ enum AttachCLI {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             await launcher.terminate(handle)
+            prewarmTask?.cancel()
+            await prewarmTask?.value
 
             let stats = await rgssEnvironment.cache.stats()
             await rgssEnvironment.cache.flush()

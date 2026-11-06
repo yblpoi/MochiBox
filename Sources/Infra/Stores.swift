@@ -424,6 +424,18 @@ struct Settings: Codable, Sendable, Equatable {
     /// Live2DInterfaceMZ 一类插件把 `$dataArmors[].name` 当服装动效表的 key、把 `_name`
     /// 拿去做换装联动比较，这类游戏要关的是**这个**，而不是整个数据回写。
     var dataPatchNames: Bool = true
+    /// 启动预译：游戏一启动就只读扫描 Data/ 的事件指令与数据表，把“将要显示”的文本
+    /// 按运行时同一 cacheKey 预译进同一份缓存（docs/architecture.md §5.5）。
+    ///
+    /// 默认开。它只影响“首句要不要等一次 provider”（P50≈997ms，而 hook 闸只有
+    /// 120ms）：关掉不会让游戏变快，只是回到逐句运行时翻译。缺键按 true 处理，
+    /// 不抬 schemaVersion。
+    var prewarmEnabled: Bool = true
+    /// 预译最多入队多少条（cacheKey 去重后）。0 = 不预译；normalized() 钳在 0...20000。
+    var maxPrewarmSegments: Int = 3000
+    /// 是否连战斗事件（Troops）的文本一起预译。默认关：战斗台词占比小，
+    /// 且不少工程 Troops 里是测试残留。
+    var prewarmIncludeTroops: Bool = false
     var maxTextRows: Int = K.maxTextRows
     var maxCacheEntries: Int = K.maxCacheEntries
     var cacheRetranslateOnBackendChange: Bool = false
@@ -450,6 +462,7 @@ struct Settings: Codable, Sendable, Equatable {
         case dataPatchEnabled, dataPatchNames, maxTextRows, maxCacheEntries
         case cacheRetranslateOnBackendChange, allowSendTextToBackend, telemetryEnabled
         case logLevel, complianceAckVersion, uiLanguage, extraLaunchArgs, browserPath
+        case prewarmEnabled, maxPrewarmSegments, prewarmIncludeTroops
     }
 
     init(from decoder: Decoder) throws {
@@ -486,6 +499,10 @@ struct Settings: Codable, Sendable, Equatable {
         // 回写是默认行为，宁可开着让用户手动关，不要因为一个坏字段把功能静默关掉。
         self.dataPatchEnabled = c.tolerantValue(Bool.self, forKey: .dataPatchEnabled, defaults.dataPatchEnabled)
         self.dataPatchNames = c.tolerantValue(Bool.self, forKey: .dataPatchNames, defaults.dataPatchNames)
+        // 预译三个字段同样是“缺键按默认”：老 settings.json 没有它们，不需要也不许抬版本。
+        self.prewarmEnabled = c.tolerantValue(Bool.self, forKey: .prewarmEnabled, defaults.prewarmEnabled)
+        self.maxPrewarmSegments = c.tolerantValue(Int.self, forKey: .maxPrewarmSegments, defaults.maxPrewarmSegments)
+        self.prewarmIncludeTroops = c.tolerantValue(Bool.self, forKey: .prewarmIncludeTroops, defaults.prewarmIncludeTroops)
         self.maxTextRows = c.tolerantValue(Int.self, forKey: .maxTextRows, defaults.maxTextRows)
         self.maxCacheEntries = c.tolerantValue(Int.self, forKey: .maxCacheEntries, defaults.maxCacheEntries)
         self.cacheRetranslateOnBackendChange = c.tolerantValue(Bool.self, forKey: .cacheRetranslateOnBackendChange, defaults.cacheRetranslateOnBackendChange)
@@ -542,6 +559,8 @@ struct Settings: Codable, Sendable, Equatable {
         result.attachTimeoutSec = clampInt("attachTimeoutSec", attachTimeoutSec, 5, 120)
         result.maxTextRows = clampInt("maxTextRows", maxTextRows, 100, 200000)
         result.maxCacheEntries = clampInt("maxCacheEntries", maxCacheEntries, 100, 10000000)
+        // 0 = 不预译（合法值，不告警）；上限 20000 防病态工程把启动后台任务塞满。
+        result.maxPrewarmSegments = clampInt("maxPrewarmSegments", maxPrewarmSegments, 0, 20000)
 
         // P0 语言对固定（PRD v0.3 D-1）：任何越界值都回落，不崩溃、记日志。
         if result.srcLang != K.fixedSrcLang {

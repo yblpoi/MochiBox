@@ -137,6 +137,9 @@ final class SessionController: ObservableObject {
     /// 差异全在 EngineAdapter 的实现里 —— 所以这里存**协议**类型，不存具体类。
     private var adapter: (any EngineAdapter)?
     private var pipeline: TranslationPipeline?
+    /// RGSS 启动预译的后台任务。**不持有强引用链到 controller**（detached），
+    /// 只用于 stop / 关闭翻译时取消；nil = 没有在跑（或已结束）。
+    private var prewarmTask: Task<Void, Never>?
     private var currentEntry: GameEntry?
 
     /// 本会话的引擎族（`EngineKind.family`）。缓存键、码表、文本流标注三处必须同源 ——
@@ -309,6 +312,9 @@ final class SessionController: ObservableObject {
                 log: log
             )
             await adapter.configureRGSSBridge(environment)
+            // 桥已经拿到翻译来源，现在才轮到预译：detached 后台扫描 + 入队，
+            // **不 await** —— 预译再慢也不能拖 launch / attach。失败只降级。
+            startPrewarm(entry: entry, environment: environment)
         }
 
         do {
@@ -347,12 +353,50 @@ final class SessionController: ObservableObject {
         }
     }
 
+    /// 启动 RGSS 预译：**detached、不 await、失败只降级**。
+    ///
+    /// 必须放在 configureRGSSBridge 之后：预译与运行时翻译共用同一条管线 / 同一份缓存，
+    /// 桥还没注入翻译来源时提交条目没有意义（hook 一 attach 就会请求首句）。
+    /// 这里绝不能 await run()：预译是“启动后台热身”，等它等于用扫描时间拖慢 launch。
+    ///
+    /// 失败 / 超时 / 被取消都只意味着“首句回落到运行时翻译”，不改会话状态、不报错。
+    private func startPrewarm(entry: GameEntry, environment: RGSSPipelineEnvironment) {
+        prewarmTask?.cancel()
+        prewarmTask = nil
+        if let reason = RGSSPrewarm.skipReason(settings: settings) {
+            // 设置层的闸集中在一处判（RGSSPrewarm.skipReason），这里只负责记原因：
+            // 「关闭预译」「直通」「后端没配置」「上限 0」都不该建一个注定空转的任务。
+            log.info("RGSSPrewarm", "跳过启动预译", ["reason": reason])
+            return
+        }
+        let options = RGSSPrewarm.Options(settings: settings)
+        let gameRoot = URL(fileURLWithPath: entry.path)
+        let logger = log
+        prewarmTask = Task.detached(priority: .utility) {
+            let stats = await RGSSPrewarm.run(
+                environment: environment,
+                gameRoot: gameRoot,
+                options: options
+            )
+            if stats.submitted > 0 {
+                logger.info("RGSSPrewarm", "预译条目已入队，后台翻译中", [
+                    "submitted": "\(stats.submitted)",
+                    "cacheHit": "\(stats.cacheHit)"
+                ])
+            }
+        }
+    }
+
     func stop() async {
         guard !stopRequested else { return }
         stopRequested = true
         guard state != .idle else { return }
         state = .stopped
         stateLabel = "停止中…"
+        // 先停预译：否则它还会把新条目 submit 进即将被 cancelAll 的队列，
+        // 并且扫描本身在后台继续读文件（用户已经关会话了）。
+        prewarmTask?.cancel()
+        prewarmTask = nil
         resetChineseDetection()
         // 顺序是刻意的：先让全文任务停手 + 落盘，再拆 RPC，最后 cancel 管线，
         // 之后才动适配器。`adapter.stop()` 之后页面就没了，但 `TranslationPipeline`
@@ -388,6 +432,12 @@ final class SessionController: ObservableObject {
         // `FullTextController → pipeline.resolve` 仍按 enabled=true 继续翻译并计费。
         // SettingsBox 的签名不含 agentEnabled，update 只透传、不会重建 provider。
         settingsBox.update(settings: settings, credentials: settingsBox.credentials)
+        // 关掉翻译时预译也必须停：它每 20 条一批 submit(.low)，不停就会在用户
+        // 关闭后继续往管线里塞请求。重新打开不重启预译 —— 会话级热身只做一次。
+        if !enabled {
+            prewarmTask?.cancel()
+            prewarmTask = nil
+        }
         // 先取消在飞请求：只发 config 的话，管线里已经发出去的那几批回来仍会
         // cache.put + 推流，用户点了“关闭翻译”游戏里还会再跳一次译文。
         // cancelAll() 会自增 epoch，之后回来的结果被丢弃（见 TranslationPipeline）。
@@ -395,6 +445,17 @@ final class SessionController: ObservableObject {
         if enabled { chineseSuspected = false }
         stream.setPaused(!enabled)
         try? await adapter?.send(.config(currentConfig()))
+    }
+
+    /// 预译开关：立刻生效（关掉就取消当前会话里还在扫的任务）。
+    /// 打开只对**下一次启动**起作用 —— 会话级热身只做一次，不重新扫一遍已开着的游戏。
+    /// 这里只改本地 settings：`prewarmEnabled` 不进管线闭包（管线只读 agentEnabled 等）。
+    func setPrewarmEnabled(_ enabled: Bool) async {
+        settings.prewarmEnabled = enabled
+        if !enabled {
+            prewarmTask?.cancel()
+            prewarmTask = nil
+        }
     }
 
     func setFontScale(_ scale: Double) async {
@@ -1360,6 +1421,17 @@ final class AppState: ObservableObject {
         try? settingsStore.saveSettings(persisted)
         settings.dataPatchNames = enabled
         Task { await session.setDataPatchNames(enabled) }
+    }
+
+    /// 启动预译开关：落盘 → 同步内存 → 通知会话取消当前扫描（与数据回写同一条
+    /// 读-改-写路径，只回写这一个字段，不顺带提交设置页里未保存的其它编辑）。
+    func setPrewarmEnabled(_ enabled: Bool) {
+        guard enabled != settings.prewarmEnabled else { return }
+        var persisted = settingsStore.loadSettingsFromDisk() ?? settings
+        persisted.prewarmEnabled = enabled
+        try? settingsStore.saveSettings(persisted)
+        settings.prewarmEnabled = enabled
+        Task { await session.setPrewarmEnabled(enabled) }
     }
 
     func acknowledgeCompliance() {

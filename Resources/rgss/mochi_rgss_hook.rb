@@ -31,6 +31,28 @@
 #   * 用非阻塞 IO + 截止时间，绝不无限期阻塞游戏主线程。
 #   * 幂等：重复加载不会重复 hook（$mochi_hook_installed）。
 
+# ----------------------------------------------------------------------
+# Win32API shim 接线（早于游戏脚本，且不受 MOCHI_RGSS_HOOK=off 影响）
+#
+# mkxp-z 的 Win32API 在 macOS 上把 dll 名当相对路径 dlopen，任何用 Win32API
+# 的 XP/VX 游戏都会在 new 阶段崩。shim 在 preload 阶段重开 Win32API.new，按
+# (dll, func) 分派到纯 Ruby 安全实现。这里加载失败只记日志并继续——本文件
+# 其余部分（翻译通道）必须照常工作。
+# ----------------------------------------------------------------------
+begin
+  load File.join(__dir__, 'mochi_win32_shim.rb')
+  MochiWin32Shim.install!
+rescue Exception => e
+  begin
+    path = ENV['MOCHI_RGSS_LOG'] || '/tmp/mochi-rgss.log'
+    File.open(path, 'a:UTF-8') do |file|
+      file.puts("[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] [mochi-rgss] " \
+                "win32 shim load failed (hook continues): #{e.class}: #{e.message}")
+    end
+  rescue Exception
+  end
+end
+
 module MochiRGSSHook
   # 重复 load 时不要重定义常量（Ruby 会刷 already initialized constant 警告）。
   HOST_DEFAULT      = '127.0.0.1' unless const_defined?(:HOST_DEFAULT, false)

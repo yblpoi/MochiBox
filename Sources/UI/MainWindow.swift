@@ -923,6 +923,21 @@ struct SettingsSheet: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Divider()
+
+                // 预译挂在「游戏数据」组：它同样是“启动时读 Data/ 的一次性数据准备”，
+                // 且开关语义是“要不要提前处理游戏数据”，与数据回写同属可关的侵入项。
+                Toggle("启动时预译可见文本（首句直接中文）", isOn: Binding(
+                    get: { app.settings.prewarmEnabled },
+                    set: { app.setPrewarmEnabled($0) }
+                ))
+                .toggleStyle(.checkbox)
+
+                Text("启动后在后台只读扫描 Data/ 的事件对话与数据表，把将要显示的句子提前翻译进同一份缓存；不阻塞启动，失败只意味着该句仍先显示原文。关掉后首句回到“先原文、下一遍中文”。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(6)
         }

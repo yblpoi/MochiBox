@@ -1352,6 +1352,64 @@ sequenceDiagram
 - 影响：被清掉期间这些条目不参与下发，全文翻译的进度 / 计数会来回抖；不影响最终正确性（下一次翻译会写回同样的条目）。
 - 结论：自愈，暂不修。若将来修，属「purge 与 glossary keepAsIs 的交互」这一独立事项。
 
+### 5.8 RGSS 数据层预译（XP / VX / VX Ace，已落地 2026-11-06）
+
+**动机**：RGSS 的 hook 每句只等 120ms（`docs/rgss-text-channel.md` §8.2），而真实后端 P50≈997ms / P90≈1227ms，
+调闸无意义 —— 首遍只能是原文。唯一不改交互的解法是**启动时就把将要显示的句子译进同一份缓存**：
+游戏真正显示该句时 `TranslationPipeline.resolve()` 直接命中，不再走后端往返。
+
+**代码与接线**
+
+- 扫描 / 门控 / 入队：`Sources/Domain/RGSSPrewarm.swift`。
+- cacheKey 公式：`Sources/Adapters/RGSSPipelineTranslator.swift:98` 的
+  `nonisolated static func makeRequestItem(raw:srcLang:tgtLang:glossaryBox:)` —— `translate()` 与预译共用同一函数，
+  禁止两套公式（否则 key 对不上，预译永远“命中不了”）。
+- 接线：`Sources/Domain/SessionController.swift` 的 `startPrewarm`，在 `start()` 里 `configureRGSSBridge` 之后以
+  `Task.detached(priority: .utility)` 启动，**不 await**；`stop()` / `setTranslationEnabled(false)` 取消任务。
+- 设置：`Sources/Infra/Stores.swift` 的 `prewarmEnabled`(true) / `maxPrewarmSegments`(3000，clamp 0...20000) /
+  `prewarmIncludeTroops`(false)，`schemaVersion` 仍为 2（全部字段走 `tolerantValue` 兜底）；UI 开关在
+  `Sources/UI/MainWindow.swift` 数据补丁分组内。
+
+**与 §5.1–5.5（MV/MZ）的关系**：同一套「抽取 → SkipRules → cacheKey 去重 → `submit(.low)`」口径，但 RGSS 的
+数据是 Marshal 而不是 JSON，字段路径与指令码完全不同：
+
+| 来源 | 取什么 | 不取 |
+|---|---|---|
+| `System.rxdata` / `.rvdata2` | `game_title`、`currency_unit`、`terms.*`、`words.*`（递归取字符串节点） | 其它字段 |
+| 事件指令 `101` | XP 的 `parameters[0]`（首行，与后续 401 拼成整段） | VX / VX Ace 的 `101[0]`（`face_name` 头像文件名） |
+| 事件指令 `401` / `405` | `parameters[0]`（VX / VX Ace 逐行；XP 的 401 归入前一个 101 整段） | 空串、`parameters[1..]` |
+| 事件指令 `102` | `parameters[0][*]`（选项逐条） | 分支参数 |
+| Actors / Classes / Skills / Items / Weapons / Armors / Enemies / States | extractor 的 `name` / `description` / `nickname` / `message1..4` | 数值、资源文件名 |
+| `Map*` | 只取 `events[*].pages[*].list` 的上述指令 | `display_name`、事件名、图块 / 动画名 |
+| `Troops` | 默认不读；`prewarmIncludeTroops=true` 时读 `pages[*].list` | — |
+| `Scripts` / `MapInfos` / `Tilesets` / `Animations` | 不读 / 跳过 | — |
+
+**为什么 XP 要整段、VX / VX Ace 不用**：XP 的 `Game_Interpreter` 把 101 与后续每个 401 累积进
+`$game_temp.message_text`（以 `\n` 连接，无尾随换行），hook 一次请求整段；若逐行预译，运行时整段的
+cacheKey 永远不存在，首句照样不命中。VX / VX Ace 的 hook 逐行请求 `$game_message.texts`，故逐行。
+
+**顺序与规模**：`System` → `CommonEvents` → `Map*`（ID 升序）→ `Troops`（可选）→ 其它数据库（文件名升序）；
+`Set<cacheKey>` 去重；`maxPrewarmSegments` 截断并记 `truncated`；每 20 条 `pipeline.submit(.low)`，
+不 flush、不等待译文 —— 运行时 miss（`.high`）永远排在预译前面。日志字段：
+`filesScanned/filesFailed/textsScanned/selected/skipped/duplicate/cacheHit/submitted/elapsedMs/truncated/stopReason`。
+
+**四条可测不变量**
+
+1. 预译**不得**调 `resolve()`（那会以 `.high` 入队并多查一次缓存）；固定顺序 `makeRequestItem → SkipRules →
+   去重 → cache.get → submit(.low)`，跳过项既不写缓存也不发请求。
+2. `start()` 不 await 预译：provider 卡死时 `run()` 仍立刻返回（D23 `prewarm-nonblocking-*`）。
+3. 关闭预译 / 直通 / 后端未配置 / 上限为 0 时整段不跑；运行中失败、超时、取消只降级为运行时翻译，
+   不改会话状态、不打断 launch/attach。
+4. XP 的 101+401 整段 key 必须等于运行时 `RGSSPipelineTranslator.translate()` 算出的 key（D23 `prewarm-happy-key`）。
+
+**边界**：只覆盖事件页与数据表的**静态**文本。脚本里拼出来的句子、`\N[1]` / `\V[1]` 等代入后才成形的文本、
+以及本次扫描后被动态改写的文本仍走运行时翻译并首遍原文 —— 这是设计边界，不是缺陷。
+
+**验收证据（2026-11-06）**：`bash Tests/e2e/run.sh --suite domain` 全绿（16 个 case / 520 条断言，含 D23 的 81 条：
+预译后首句同 key 命中、缓存纯度（纯数字 / 纯符号 / 已中文 / 过短 / 资源名 0 请求 0 条目）、不阻塞、provider 失败降级、
+截断与设置闸门）；`bash Scripts/build.sh` 通过。真实 `/tmp/xp-run` XP 工程做过离线扫描（files=12 / failed=0 / 候选 441），
+**GUI 首句命中的实跑日志尚未采集**：这条目前是“测试 + 离线扫描证据”，不是实跑证据。
+
 ---
 
 ## 6. Agent JS 的边界（`Resources/agent_mvmz.js`）

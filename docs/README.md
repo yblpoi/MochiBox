@@ -2,7 +2,7 @@
 
 # docs/ — 文档地图
 
-当前有效 **19 份 .md**（含本索引）、**1 份 html**、`assets/` 2 张截图；
+当前有效 **20 份 .md**（含本索引）、**1 份 html**、`assets/` 2 张截图；
 V0.1–V0.4 的历史文档与图表整齐归档在 [`archive/`](archive/)（16 个文件），不再混在根目录。
 
 状态只有三种：`当前有效` / `历史证据（绑 <sha 或版本>）` / `存档`。
@@ -44,6 +44,7 @@ V0.1–V0.4 的历史文档与图表整齐归档在 [`archive/`](archive/)（16 
 | [rgss-wiring-notes.md](rgss-wiring-notes.md) | RGSS 数据层接线笔记：Marshal 往返、文本路径、Scripts 跳过 | 当前有效 |
 | [rgss-text-channel.md](rgss-text-channel.md) | RGSS 屏上文本通道：customScript 陷阱、preload + TracePoint、三版入口、行协议与实测 | 当前有效 |
 | [rpgmaker-runtime-verification.md](rpgmaker-runtime-verification.md) | 四版本运行时实测记录：证据分级、VX/VX Ace 脚本来源审计、复现要点 | 当前有效 |
+| [win32-shim.md](win32-shim.md) | Win32API shim：macOS 上 `Win32API.new` 必崩的根因、纯 Ruby 分派层、支持矩阵与关闭方式 | 当前有效 |
 | [known-limits.md](known-limits.md) | **负结论与已解决项**（L1 无 GBK 样本 / L2 设置菜单**已解决** / L3 Ruby 只能 3.1.3）：依据、现存覆盖、残留风险、重开条件 | 当前有效 |
 
 ## 二、历史归档 [`archive/`](archive/)

@@ -59,14 +59,14 @@ enum ArgumentValidation {
     ]
 
     /// `--play` 共用 `--attach` 的采集参数，外加它自己的目录与关窗开关。
-    static let playFlags: Set<String> = attachFlags.union(["--play", "--close-after"])
+    static let playFlags: Set<String> = attachFlags.union(["--play", "--close-after", "--model"])
 
     /// `--play-native` 不 attach、不采集，只认目录与翻译后端参数。
     /// **不含 `--control` / `--headless` / `--browser` / `--kernel` / `--out` /
     /// `--screenshot`**：它们在这条路径上没有实现，接受后静默忽略比报错更糟
     /// （用户以为截图/控制通道生效了）。
     static let playNativeFlags: Set<String> = [
-        "--play-native", "--provider", "--endpoint", "--api-key", "--duration"
+        "--play-native", "--provider", "--endpoint", "--api-key", "--model", "--duration"
     ]
 
     /// `KernelSmokeMain.parse` 只认这两个（诊断入口刻意不共享产品参数面）。
@@ -185,11 +185,13 @@ enum ArgumentValidation {
 --play
   以上 --attach 的选项全部可用，另有:
   --play <游戏目录>         游戏目录（MV/MZ 的静态站点根或作品根）
+  --model <id>             翻译后端模型名（缺省用设置里的模型）
   --close-after <秒>       启动成功 N 秒后模拟用户关窗
 
 --play-native
   --play-native <游戏目录>  用内置原生运行时启动（EasyRPG / mkxp-z）
                           支持 RPG Maker 2000/2003、XP、VX、VX Ace
+  --model <id>             翻译后端模型名（缺省用设置里的模型；DeepSeek 需 deepseek-flash）
   --duration <秒>          运行时长（默认 6；到点 SIGTERM→SIGKILL）
   成功输出 `play: backend=<easyrpg|mkxpz> pid=<n>`；不打印 `play: http=`，也不 attach。
 

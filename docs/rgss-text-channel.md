@@ -614,5 +614,34 @@ cd /tmp/xp-run && ./shot /tmp/xp-run/hook-msg.png
 - 待做：服务端持久化连接 / 批量请求 / 失败指标。五个面（message / menu / choice /
   help / battle）**已默认全开**（§0.1）；需要收窄时用 `MOCHI_RGSS_SURFACES` 裁剪，
   菜单/调试文本默认也会进翻译管线——这是有意为之，不再是待办。
-- 待做：把 RGSS 的**数据层**（Map / CommonEvent / Terms 的 401 文本）也预译进同一份缓存，
-  这样首次对话就能命中，而不是“首遍原文、次遍中文”。
+- ~~待做：把 RGSS 的**数据层**（Map / CommonEvent / Terms 的 401 文本）也预译进同一份缓存，
+  这样首次对话就能命中，而不是“首遍原文、次遍中文”。~~ **已完成（2026-11-06，Sources/Domain/RGSSPrewarm.swift）**：
+  游戏启动后由 `SessionController` 起一个 detached Task，只读扫描 `Data/` 的 `System` / `CommonEvents` /
+  `Map*`（`prewarmIncludeTroops` 时加 `Troops`）与数据库字段，按**运行时同一公式**
+  （`RGSSPipelineTranslator.makeRequestItem`）算 cacheKey，逐条 `SkipRules → cache.get → submit(.low)`。
+  **抽取白名单**：事件指令只取 `101[0]`（仅 XP）、`401[0]`、`405[0]`、`102[0][*]`；`101[1]` 是头像
+  文件名，VX / VX Ace 的 `101[0]` 也是头像文件名 —— 一律不进缓存；地图名 / 事件名不取。
+  **XP 必须整段且带尾随换行**：Interpreter 的做法是 `message_text = 101 首行 + "\n"`、每条 401
+  `message_text += 行 + "\n"`，选项（102）也 `+= 选项文字 + "\n"` 追加进**同一个字符串**；
+  所以 XP 必须按 101 开新段、401/102 依次 `+ text + "\n"` 累积，得到与 hook 完全相同的整串
+  （逐行 `join("\n")` 会少尾随换行、漏掉选项，导致运行时必 miss —— 这是 2026-11-06 修掉的缺陷）。
+  VX / VX Ace 的 hook 逐行请求 `$game_message.texts`，故逐行。
+  预译入队用 `.low`，运行时的 `.high` 永远先走；关闭翻译 / 直通 / 后端未配置 / 上限为 0 时直接不跑。
+  **边界**：只覆盖事件页与数据表的**静态**文本；脚本里拼出来的句子、`\N[1]` 等代入后才成形的文本、
+  以及本次扫描后被动态改写的文本不在覆盖内 —— 这些仍走运行时翻译并首遍原文。
+  **证据等级**：domain 用例 D23（`Tests/e2e/cases/domain/23_rgss_prewarm.mjs`，81 条断言）用程序化
+  XP / VX Ace fixture + 真实 `TranslationCache` / `TranslationPipeline` + 假 provider，断言“首句显示前
+  同一 cacheKey 已在缓存”、纯度（纯数字 / 纯符号 / 已中文 / 过短 / 资源名 0 请求 0 条目）、不阻塞、
+  provider 失败只降级、截断与设置闸门；对 `/tmp/xp-run` 真实 XP 工程做过离线扫描
+  （files=12 / texts=440 / failed=0 / selected=355，duplicate=83）。**真实后端实跑（2026-11-06）**：
+  ① 预热缓存 + `--provider openai`（DeepSeek `deepseek-flash`）→ mkxp-z 首帧即 `RESP seq=1 source=hit`，
+  桥日志无 PENDING，hook 收到中文「你好，世界。这是第一条消息。\n第二行：…」；
+  ② 全新数据目录 + 真 key → `RGSSPrewarm` 日志 `files=12 texts=440 selected=355 cacheHit=0 submitted=355
+  elapsedMs=39`，355 条译文约 2s 内落盘，缓存纯度审计（纯数字 / 纯符号 / 资源名）0 条；
+  ③ 反例：`--provider passthrough` 时桥日志 `MISS seq=1 -> PENDING`（直通不读缓存）；
+  ④ **时序对照（决定性）**：给测试工程加 6s 预加载延迟（`mkxp.json` 用户层 `preloadScript` sleep，hook 排最后），
+  同一份新缓存目录下预译 13:35:48 完成入队、游戏 13:35:55 才显示首句 → 桥日志 `RESP seq=1 source=hit`
+  且无 PENDING、hook 首帧即中文；同工程无延迟时首句 13:26:49 早于预译往返 → `TIMEOUT -> PENDING`。
+  即「预译先完成 → 首帧即中文」的因果链已闭环，剩下的只是 autorun 工程的启动时序。
+  仍属边界的只有**时序**：autorun 型工程在启动 1s 内就弹首句，预译（扫描 39ms + 首批往返）来不及，
+  首帧仍走运行时翻译；标题画面型工程有数秒余量，首句即命中。
